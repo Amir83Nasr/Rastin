@@ -667,6 +667,40 @@
     return document.documentElement.classList.contains('rtl-translator-active');
   }
 
+  // ─── Font Persistence (independent of RTL state) ────
+  /**
+   * Injects a font-family style that stays active even when RTL
+   * is toggled off.  Prevents Persian text from rendering without
+   * IRANYekanX (broken ligatures, bad spacing).
+   */
+  function ensurePersistedFont() {
+    if (document.getElementById('rtl-translator-persist-font')) return;
+    var s = document.createElement('style');
+    s.id = 'rtl-translator-persist-font';
+    s.textContent =
+      'html.rtl-translator-has-fa body,' +
+      'html.rtl-translator-has-fa p,' +
+      'html.rtl-translator-has-fa h1,html.rtl-translator-has-fa h2,' +
+      'html.rtl-translator-has-fa h3,html.rtl-translator-has-fa h4,' +
+      'html.rtl-translator-has-fa h5,html.rtl-translator-has-fa h6,' +
+      'html.rtl-translator-has-fa span,html.rtl-translator-has-fa div,' +
+      'html.rtl-translator-has-fa li,html.rtl-translator-has-fa a,' +
+      'html.rtl-translator-has-fa label,html.rtl-translator-has-fa td,' +
+      'html.rtl-translator-has-fa th,html.rtl-translator-has-fa blockquote,' +
+      'html.rtl-translator-has-fa figcaption,' +
+      'html.rtl-translator-has-fa caption,html.rtl-translator-has-fa cite,' +
+      'html.rtl-translator-has-fa summary {' +
+      "font-family:'IRANYekanX','Tahoma','Vazirmatn',sans-serif !important;}";
+    document.head.appendChild(s);
+    document.documentElement.classList.add('rtl-translator-has-fa');
+  }
+
+  function removePersistedFont() {
+    document.documentElement.classList.remove('rtl-translator-has-fa');
+    var s = document.getElementById('rtl-translator-persist-font');
+    if (s) s.remove();
+  }
+
   // ─── Remove Translation (no page reload) ────────────
   /**
    * Restore all text nodes to their original pre-translation text.
@@ -687,6 +721,7 @@
     });
     _originalTexts.clear();
     STATE.translated = false;
+    removePersistedFont();
     log.info(null, 'Restored ' + count + ' text nodes to original language');
     return count > 0;
   }
@@ -742,6 +777,7 @@
         if (ok) {
           hideBanner(banner);
           saveState(true);
+          ensurePersistedFont();
           log.notify('صفحه با موفقیت به فارسی ترجمه شد', 'success');
         } else {
           // Translation failed — show error state in banner
@@ -851,6 +887,7 @@
       case 'translate':
         applyRTL();
         translatePage().then(function (ok) {
+          if (ok) ensurePersistedFont();
           saveState(true);
           sendResponse({ success: ok, translated: STATE.translated });
         });
@@ -935,7 +972,10 @@
       log.info(null, 'Restored previous RTL state for domain');
       if (saved.translated) {
         translatePage().then(function (ok) {
-          if (ok) log.info(null, 'Restored translation for domain');
+          if (ok) {
+            ensurePersistedFont();
+            log.info(null, 'Restored translation for domain');
+          }
         });
       }
       return;

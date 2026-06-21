@@ -62,6 +62,10 @@ RTL Translator/
 - Banner UI with translate/RTL-only/dismiss/retry buttons
 - Domain state persistence via localStorage + chrome.storage
 - Retry logic: up to 2 retries with exponential backoff for translation API calls
+- DOM injection via `requestAnimationFrame` batching (500 updates/frame) — avoids per-node layout invalidation
+- Progressive rendering: visible-first chunk ordering via `getBoundingClientRect` sampling (capped at 200 parents, 500px viewport buffer)
+- Error recovery: batch `|||` split mismatch → retry each text individually; 429 circuit-breaker adds 3s delay after 3+ consecutive rate limits
+- **No-page-reload restore**: `_originalTexts` Map (TextNode → pre-translation text) saved at DOM collection time; `removeTranslation()` / `resetAll()` restore original content instantly without reloading the page; `get_status` exposes `hasOriginals` flag
 
 ### Code-like Content Detection (3-layer system)
 
