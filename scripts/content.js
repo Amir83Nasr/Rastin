@@ -244,25 +244,43 @@
 
   function collectTextNodes(root) {
     var nodes = [];
-    var walker = document.createTreeWalker(
-      root,
-      NodeFilter.SHOW_TEXT,
-      {
-        acceptNode: function (node) {
-          if (node.nodeType !== Node.TEXT_NODE) return NodeFilter.FILTER_REJECT;
-          if (!node.textContent || !node.textContent.trim()) return NodeFilter.FILTER_REJECT;
-          if (!shouldTranslateNode(node)) return NodeFilter.FILTER_REJECT;
-          if (!isMeaningfulText(node.textContent)) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
-        },
-      },
-      false,
-    );
+    var seenShadows = new WeakSet();
 
-    var node;
-    while ((node = walker.nextNode())) {
-      nodes.push(node);
+    function walkTree(nodeRoot) {
+      var walker = document.createTreeWalker(
+        nodeRoot,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode: function (node) {
+            if (node.nodeType !== Node.TEXT_NODE) return NodeFilter.FILTER_REJECT;
+            if (!node.textContent || !node.textContent.trim()) return NodeFilter.FILTER_REJECT;
+            if (!shouldTranslateNode(node)) return NodeFilter.FILTER_REJECT;
+            if (!isMeaningfulText(node.textContent)) return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+          },
+        },
+        false,
+      );
+
+      var node;
+      while ((node = walker.nextNode())) {
+        nodes.push(node);
+      }
     }
+
+    // Phase 1: walk light DOM
+    walkTree(root);
+
+    // Phase 2: walk into open shadow roots
+    var elWalker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null, false);
+    var el;
+    while ((el = elWalker.nextNode())) {
+      if (el.shadowRoot && !seenShadows.has(el.shadowRoot)) {
+        seenShadows.add(el.shadowRoot);
+        walkTree(el.shadowRoot);
+      }
+    }
+
     return nodes;
   }
 
@@ -371,6 +389,15 @@
             .join('');
           // Store in cache
           transCache[text] = result;
+
+          // Extract detected source language from API response
+          // data[2] is the detected language code (e.g. "en", "de", "ar")
+          if (data[2] && data[2] !== STATE.langCode) {
+            STATE.langCode = data[2];
+            STATE.langDetected = LANG_NAMES[data[2]] || data[2].toUpperCase();
+            log.info(null, 'Source language detected: ' + STATE.langDetected);
+          }
+
           return result;
         }
 
@@ -578,6 +605,91 @@
     return processNext();
   }
 
+  // ─── SPA / Dynamic Content Observer (MutationObserver) ──
+  /**
+   * After translation, watch for dynamically added content (SPA
+   * navigation, infinite scroll, React/Vue/Angular renders) and
+   * translate new text automatically.
+   */
+  var _domObserver = null;
+  var _observerTimer = null;
+  var OBSERVER_DEBOUNCE_MS = 500;
+
+  function processDOMChanges() {
+    if (!STATE.translated || STATE.translating) return;
+
+    // Walk all text nodes below body, skipping already-translated ones
+    var newNodes = [];
+    var walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode: function (node) {
+          if (!node.textContent || !node.textContent.trim()) return NodeFilter.FILTER_REJECT;
+          if (!shouldTranslateNode(node)) return NodeFilter.FILTER_REJECT;
+          if (!isMeaningfulText(node.textContent)) return NodeFilter.FILTER_REJECT;
+          // Skip nodes already saved for translation
+          if (_originalTexts && _originalTexts.has(node)) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      },
+      false,
+    );
+
+    var node;
+    while ((node = walker.nextNode())) {
+      newNodes.push(node);
+    }
+
+    if (newNodes.length === 0) return;
+
+    // Build textMap from new nodes only
+    var textMap = Object.create(null);
+    newNodes.forEach(function (n) {
+      var t = n.textContent.trim();
+      if (!textMap[t]) textMap[t] = [];
+      textMap[t].push(n);
+    });
+
+    var uniqueTexts = Object.keys(textMap);
+    log.info(null, 'DOM mutation: ' + uniqueTexts.length + ' new unique texts found');
+
+    // Translate new content using existing infrastructure
+    var chunks = chunkArray(uniqueTexts, BATCH_SIZE);
+    var deferredProcess = function (chunkIdx) {
+      if (chunkIdx >= chunks.length) return;
+      translateBatch(chunks[chunkIdx]).then(function (translated) {
+        applyTranslationDOMUpdates([chunks[chunkIdx]], [translated], textMap);
+        deferredProcess(chunkIdx + 1);
+      });
+    };
+    deferredProcess(0);
+  }
+
+  function observeDOMChanges() {
+    stopDOMObserver();
+    try {
+      _domObserver = new MutationObserver(function () {
+        clearTimeout(_observerTimer);
+        _observerTimer = setTimeout(processDOMChanges, OBSERVER_DEBOUNCE_MS);
+      });
+      _domObserver.observe(document.body, { childList: true, subtree: true });
+    } catch (_) {
+      // Some pages (e.g. chrome://) block mutation observers
+    }
+  }
+
+  function stopDOMObserver() {
+    clearTimeout(_observerTimer);
+    _observerTimer = null;
+    if (_domObserver) {
+      try {
+        _domObserver.disconnect();
+      } catch (_) {}
+      _domObserver = null;
+    }
+  }
+
   // ─── Translate Page ─────────────────────────────────
 
   /**
@@ -589,6 +701,9 @@
       log.info(ERR.TRANS_NO_TEXT, 'Translation already in progress, skipping');
       return false;
     }
+
+    // Disconnect observer during translation to avoid feedback loops
+    stopDOMObserver();
     STATE.translating = true;
 
     try {
@@ -702,6 +817,7 @@
       }
 
       STATE.translated = translatedCount > 0;
+      if (STATE.translated) observeDOMChanges();
 
       if (translatedCount > 0) {
         log.info(
@@ -824,6 +940,7 @@
    * @returns {boolean}  true if any nodes were restored
    */
   function removeTranslation() {
+    stopDOMObserver();
     if (!_originalTexts || _originalTexts.size === 0) return false;
 
     var count = 0;
