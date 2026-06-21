@@ -1,0 +1,46 @@
+{
+  "appName": {
+    "message": "RTL Translator",
+    "description": "Extension name"
+  },
+  "appDesc": {
+    "message": "Auto-translate non-Persian web pages to Farsi with RTL support and Iran Yekan X font.",
+    "description": "Extension description"
+  },
+  "actionTitle": {
+    "message": "Translate page to Persian",
+    "description": "Tooltip for toolbar icon"
+  },
+  "cmdOpenPopup": {
+    "message": "Open translator popup",
+    "description": "Keyboard shortcut to open popup"
+  },
+  "cmdToggleRtl": {
+    "message": "Toggle RTL mode",
+    "description": "Keyboard shortcut to toggle RTL"
+  },
+  "cmdTranslate": {
+    "message": "Translate page to Persian",
+    "description": "Keyboard shortcut to translate"
+  },
+  "pageStatusTranslated": {
+    "message": "Translated",
+    "description": "Page status: translated"
+  },
+  "pageStatusTranslating": {
+    "message": "Translating...",
+    "description": "Page status: translating"
+  },
+  "pageStatusRtlActive": {
+    "message": "RTL Active",
+    "description": "Page status: RTL active"
+  },
+  "pageStatusDefault": {
+    "message": "Default",
+    "description": "Page status: default"
+  },
+  "pageStatusUnavailable": {
+    "message": "Not accessible",
+    "description": "Page status: cannot inject script"
+  }
+}

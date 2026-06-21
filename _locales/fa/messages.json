@@ -1,0 +1,46 @@
+{
+  "appName": {
+    "message": "RTL Translator - مترجم فارسی",
+    "description": "نام افزونه"
+  },
+  "appDesc": {
+    "message": "ترجمه خودکار صفحات غیرفارسی به فارسی با پشتیبانی از فونت ایران یکان ایکس و راست‌چین",
+    "description": "توضیحات افزونه"
+  },
+  "actionTitle": {
+    "message": "ترجمه صفحه به فارسی",
+    "description": "راهنمای آیکون نوار ابزار"
+  },
+  "cmdOpenPopup": {
+    "message": "باز کردن پنجره مترجم",
+    "description": "میانبر صفحه کلید برای باز کردن پنجره"
+  },
+  "cmdToggleRtl": {
+    "message": "فعال/غیرفعال کردن RTL",
+    "description": "میانبر صفحه کلید برای تغییر جهت صفحه"
+  },
+  "cmdTranslate": {
+    "message": "ترجمه صفحه به فارسی",
+    "description": "میانبر صفحه کلید برای ترجمه"
+  },
+  "pageStatusTranslated": {
+    "message": "✅ ترجمه شده",
+    "description": "وضعیت صفحه: ترجمه شده"
+  },
+  "pageStatusTranslating": {
+    "message": "🔄 در حال ترجمه...",
+    "description": "وضعیت صفحه: در حال ترجمه"
+  },
+  "pageStatusRtlActive": {
+    "message": "🔵 RTL فعال",
+    "description": "وضعیت صفحه: RTL فعال است"
+  },
+  "pageStatusDefault": {
+    "message": "⚪ پیش‌فرض",
+    "description": "وضعیت صفحه: پیش‌فرض"
+  },
+  "pageStatusUnavailable": {
+    "message": "❌ قابل دسترسی نیست",
+    "description": "وضعیت صفحه: اسکریپت قابل تزریق نیست"
+  }
+}

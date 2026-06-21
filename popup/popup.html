@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RTL Translator</title>
+  <link rel="stylesheet" href="../styles/popup.css" />
+</head>
+<body>
+  <div id="app" class="container">
+
+    <!-- ═══ Header ═══ -->
+    <header class="header">
+      <img class="header-icon"
+           src="../icons/icon.svg"
+           alt="RTL Translator"
+           width="32" height="32" />
+      <div class="header-text">
+        <h1 class="title">مترجم فارسی</h1>
+        <span class="subtitle">RTL Translator</span>
+      </div>
+    </header>
+
+    <!-- ═══ Status ═══ -->
+    <section class="status-section">
+      <div class="status-row">
+        <span class="label">وضعیت صفحه:</span>
+        <span id="pageStatus" class="value">در حال بررسی…</span>
+      </div>
+      <div class="status-row">
+        <span class="label">زبان تشخیص داده شده:</span>
+        <span id="detectedLang" class="value">—</span>
+      </div>
+    </section>
+
+    <!-- ═══ Controls ═══ -->
+    <section class="controls">
+
+      <!-- RTL toggle -->
+      <label class="toggle-row">
+        <span class="toggle-label">
+          <span class="icon">↔</span>
+          راست‌چین (RTL)
+        </span>
+        <input type="checkbox" id="rtlToggle" />
+        <span class="toggle-slider"></span>
+      </label>
+
+      <!-- Translate button -->
+      <button id="translateBtn" class="btn btn-primary">
+        <span class="icon">🌐</span>
+        ترجمه صفحه به فارسی
+      </button>
+
+      <!-- Auto-banner setting -->
+      <label class="toggle-row secondary">
+        <span class="toggle-label">
+          <span class="icon">⚡</span>
+          نمایش خودکار بنر ترجمه
+        </span>
+        <input type="checkbox" id="autoBannerToggle" checked />
+        <span class="toggle-slider"></span>
+      </label>
+
+      <!-- Reset -->
+      <button id="resetBtn" class="btn btn-secondary">
+        <span class="icon">🔄</span>
+        بازگردانی به حالت اولیه
+      </button>
+    </section>
+
+    <!-- ═══ Footer ═══ -->
+    <footer class="footer">
+      قدرت گرفته از <strong>Iran Yekan X</strong>
+    </footer>
+  </div>
+
+  <script src="../scripts/popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,145 @@
+/* ===================================================
+   RTL Translator — Content Styles
+   (Applied to web pages via content script)
+   =================================================== */
+
+/* NOTE: @font-face is injected via scripts/content.js
+   (chrome.runtime.getURL) — not from this file. */
+
+/* ─── RTL Mode (applied via .rtl-translator-active on <html>) ─── */
+
+html.rtl-translator-active {
+  direction: rtl !important;
+}
+
+html.rtl-translator-active body {
+  direction: rtl !important;
+  text-align: right !important;
+  font-family: 'IRANYekanX', 'Tahoma', 'Vazirmatn', sans-serif !important;
+}
+
+/* Apply font to all text-bearing elements */
+html.rtl-translator-active body,
+html.rtl-translator-active p,
+html.rtl-translator-active h1,
+html.rtl-translator-active h2,
+html.rtl-translator-active h3,
+html.rtl-translator-active h4,
+html.rtl-translator-active h5,
+html.rtl-translator-active h6,
+html.rtl-translator-active span,
+html.rtl-translator-active div,
+html.rtl-translator-active li,
+html.rtl-translator-active a,
+html.rtl-translator-active label,
+html.rtl-translator-active input,
+html.rtl-translator-active textarea,
+html.rtl-translator-active select,
+html.rtl-translator-active button,
+html.rtl-translator-active td,
+html.rtl-translator-active th,
+html.rtl-translator-active blockquote,
+html.rtl-translator-active figcaption,
+html.rtl-translator-active caption,
+html.rtl-translator-active cite,
+html.rtl-translator-active code,
+html.rtl-translator-active kbd,
+html.rtl-translator-active pre,
+html.rtl-translator-active samp,
+html.rtl-translator-active summary {
+  font-family: 'IRANYekanX', 'Tahoma', 'Vazirmatn', sans-serif !important;
+}
+
+/* List alignment */
+html.rtl-translator-active nav,
+html.rtl-translator-active ul,
+html.rtl-translator-active ol {
+  padding-right: 0;
+  padding-left: initial;
+}
+
+html.rtl-translator-active li {
+  text-align: right;
+}
+
+/* ─── Translation Banner ─────────────────────────────── */
+.rtl-translator-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 2147483647;
+  background: linear-gradient(135deg, #1a73e8, #1557b0);
+  color: #fff;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-family: 'IRANYekanX', 'Tahoma', sans-serif;
+  font-size: 14px;
+  direction: rtl;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+  transform: translateY(-100%);
+  transition: transform 0.3s ease-out;
+}
+
+.rtl-translator-banner.visible {
+  transform: translateY(0);
+}
+
+.rtl-translator-banner-text {
+  flex: 1;
+  text-align: center;
+}
+
+.rtl-translator-banner button {
+  background: rgba(255,255,255,0.2);
+  border: 1px solid rgba(255,255,255,0.4);
+  color: #fff;
+  padding: 6px 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: 'IRANYekanX', 'Tahoma', sans-serif;
+  font-size: 13px;
+  transition: background 0.2s;
+  white-space: nowrap;
+}
+
+.rtl-translator-banner button:hover {
+  background: rgba(255,255,255,0.35);
+}
+
+.rtl-translator-banner button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rtl-translator-close-btn {
+  background: transparent !important;
+  border: none !important;
+  font-size: 22px;
+  cursor: pointer;
+  padding: 0 4px;
+  opacity: 0.8;
+  color: #fff;
+  line-height: 1;
+}
+
+.rtl-translator-close-btn:hover { opacity: 1; }
+
+/* ─── Spinner ───────────────────────────────────────── */
+.rtl-translator-loading {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: rtl-translator-spin 0.7s linear infinite;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+@keyframes rtl-translator-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
