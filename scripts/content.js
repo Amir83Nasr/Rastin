@@ -952,26 +952,41 @@
   var CODE_LTR_TAGS = ['CODE', 'PRE', 'KBD', 'SAMP', 'TT'];
 
   /**
-   * Apply RTL to the page.
+   * Apply RTL to the page (or to a scoped container on site-specific pages
+   * like GitHub README — keeping site chrome/navigation LTR).
+   *
    * Also forces LTR direction on code/technical elements
    * so indentation, punctuation, and code comments stay intact.
-   * Tracks original dir values via data-rastin-orig-dir for cleanup.
+   * Tracks original dir values via data-rastin-dir for cleanup.
    */
   function applyRTL() {
     try {
-      document.documentElement.classList.add('rtl-translator-active');
+      var root = getTranslationRoot();
+      var isScoped = root !== document.body;
 
-      // Force LTR on code blocks
-      for (var t = 0; t < CODE_LTR_TAGS.length; t++) {
-        var els = document.querySelectorAll(CODE_LTR_TAGS[t].toLowerCase());
-        for (var e = 0; e < els.length; e++) {
-          var el = els[e];
-          // Skip if already explicitly LTR or RTL
-          var cur = el.getAttribute('dir');
-          if (cur === 'ltr' || cur === 'rtl') continue;
-          el.setAttribute('data-rastin-dir', cur || '');
-          el.setAttribute('dir', 'ltr');
-        }
+      if (isScoped) {
+        // Scoped RTL — only affect the content container (e.g. GitHub README)
+        root.setAttribute('dir', 'rtl');
+        root.setAttribute('data-rastin-rtl', '');
+      } else {
+        // Full-page RTL
+        document.documentElement.classList.add('rtl-translator-active');
+      }
+
+      // Force LTR on code blocks (scoped or full-page)
+      var codeSelector = CODE_LTR_TAGS.map(function (t) {
+        return t.toLowerCase();
+      }).join(',');
+      var codeEls = isScoped
+        ? root.querySelectorAll(codeSelector)
+        : document.querySelectorAll(codeSelector);
+      for (var ci = 0; ci < codeEls.length; ci++) {
+        var el = codeEls[ci];
+        // Skip if already explicitly LTR or RTL
+        var cur = el.getAttribute('dir');
+        if (cur === 'ltr' || cur === 'rtl') continue;
+        el.setAttribute('data-rastin-dir', cur || '');
+        el.setAttribute('dir', 'ltr');
       }
     } catch (err) {
       log.error(ERR.RTL_APPLY_FAIL, 'Failed to apply RTL class', {
@@ -981,7 +996,14 @@
   }
 
   function removeRTL() {
-    document.documentElement.classList.remove('rtl-translator-active');
+    // Check for scoped RTL first
+    var scoped = document.querySelector('[data-rastin-rtl]');
+    if (scoped) {
+      scoped.removeAttribute('dir');
+      scoped.removeAttribute('data-rastin-rtl');
+    } else {
+      document.documentElement.classList.remove('rtl-translator-active');
+    }
 
     // Restore original dir on code blocks
     var marked = document.querySelectorAll('[data-rastin-dir]');
@@ -998,7 +1020,10 @@
   }
 
   function isRTLActive() {
-    return document.documentElement.classList.contains('rtl-translator-active');
+    return (
+      document.documentElement.classList.contains('rtl-translator-active') ||
+      !!document.querySelector('[data-rastin-rtl]')
+    );
   }
 
   // ─── Font Persistence (independent of RTL state) ────
@@ -1008,6 +1033,14 @@
    * IRANYekanX (broken ligatures, bad spacing).
    */
   function ensurePersistedFont() {
+    // Scoped site (e.g., GitHub README) — font stays via [data-rastin-has-fa] CSS
+    var scoped = document.querySelector('[data-rastin-rtl]');
+    if (scoped) {
+      scoped.setAttribute('data-rastin-has-fa', '');
+      return;
+    }
+
+    // Full-page font persistence
     if (document.getElementById('rtl-translator-persist-font')) return;
     var s = document.createElement('style');
     s.id = 'rtl-translator-persist-font';
@@ -1030,6 +1063,13 @@
   }
 
   function removePersistedFont() {
+    // Scoped site cleanup
+    var scopedFa = document.querySelector('[data-rastin-has-fa]');
+    if (scopedFa) {
+      scopedFa.removeAttribute('data-rastin-has-fa');
+    }
+
+    // Full-page cleanup
     document.documentElement.classList.remove('rtl-translator-has-fa');
     var s = document.getElementById('rtl-translator-persist-font');
     if (s) s.remove();

@@ -18,6 +18,17 @@ html.rtl-translator-active body {
   font-family: 'IRANYekanX', 'Tahoma', 'Vazirmatn', sans-serif !important;
 }
 
+/* Scoped RTL — applied to a content container (e.g. GitHub README) instead of full page */
+[data-rastin-rtl] {
+  direction: rtl !important;
+  font-family: 'IRANYekanX', 'Tahoma', 'Vazirmatn', sans-serif !important;
+}
+
+/* Font persistence for scoped containers */
+[data-rastin-has-fa] {
+  font-family: 'IRANYekanX', 'Tahoma', 'Vazirmatn', sans-serif !important;
+}
+
 /* Apply font to all text-bearing elements */
 html.rtl-translator-active body,
 html.rtl-translator-active p,
