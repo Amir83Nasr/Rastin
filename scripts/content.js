@@ -712,6 +712,33 @@
 
   // ─── (No auto-MutationObserver — translation only on user command) ──
 
+  // ─── Site-specific Translation Root ──────────────────
+  /**
+   * On site-specific pages (e.g. GitHub), only translate the main
+   * content area (README preview) instead of the entire page.
+   * Falls back to document.body for all other sites.
+   *
+   * @returns {Element}  The root element to collect text nodes from.
+   */
+  function getTranslationRoot() {
+    var host = window.location.hostname;
+
+    // GitHub: only translate the README preview (markdown body)
+    if (host === 'github.com' || host.endsWith('.github.com')) {
+      var readme =
+        document.querySelector('article.markdown-body') ||
+        document.querySelector('.repository-content article.markdown-body') ||
+        document.querySelector('#readme');
+      if (readme) {
+        log.info(null, 'GitHub README detected — scoping translation to README area');
+        return readme;
+      }
+    }
+
+    // All other sites: translate the whole page
+    return document.body;
+  }
+
   // ─── Translate Page ─────────────────────────────────
 
   /**
@@ -728,8 +755,17 @@
     showTranslationProgress();
 
     try {
+      // Determine translation root — on GitHub this is the README area only
+      var transRoot = getTranslationRoot();
+      if (!transRoot) {
+        log.info(ERR.TRANS_NO_TEXT, 'No translatable root element found');
+        STATE.translating = false;
+        hideTranslationProgress();
+        return false;
+      }
+
       // Short-circuit: no meaningful text on page
-      var bodyText = ((document.body && document.body.innerText) || '').trim();
+      var bodyText = ((transRoot && transRoot.innerText) || '').trim();
       if (bodyText.length < 10) {
         log.info(ERR.TRANS_NO_TEXT, 'Page body has no meaningful text, skipping');
         STATE.translating = false;
@@ -737,7 +773,7 @@
         return false;
       }
 
-      var textNodes = collectTextNodes(document.body);
+      var textNodes = collectTextNodes(transRoot);
       if (textNodes.length === 0) {
         log.info(ERR.TRANS_NO_TEXT, 'No translatable text found on page');
         STATE.translating = false;
