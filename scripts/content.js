@@ -385,7 +385,43 @@
     }
 
     walkTree(root);
+
+    // Code-block safety filter: text nodes can be inside <pre>/<code> that
+    // cross shadow-DOM boundaries (e.g. GitHub rendered markdown).  The
+    // shouldTranslateNode check above can't reach ancestors outside the
+    // shadow tree, so we do a second pass that follows the full ancestor
+    // chain including shadow hosts.
+    nodes = nodes.filter(function (n) {
+      return !isNodeInCodeBlock(n);
+    });
+
     return nodes;
+  }
+
+  /**
+   * Check whether a node is inside a code block, following the full
+   * ancestor chain INCLUDING shadow-DOM host boundaries.
+   * This catches cases where shouldTranslateNode misses code blocks
+   * because its parentElement walk stops at a shadow root boundary.
+   */
+  function isNodeInCodeBlock(node) {
+    var el = node;
+    while (el) {
+      if (el.tagName && SKIP_TAGS.has(el.tagName)) return true;
+      if (el.classList) {
+        for (var ci = 0; ci < el.classList.length; ci++) {
+          var cls = el.classList[ci].toLowerCase();
+          // Highlight wrappers and language-* classes are strong code signals
+          if (cls.indexOf('highlight') !== -1 || cls.indexOf('language-') !== -1) return true;
+        }
+      }
+      el = el.parentElement;
+    }
+    // Traverse shadow-DOM host boundary
+    var root = node.getRootNode ? node.getRootNode() : null;
+    var host = root && root.host ? root.host : null;
+    if (host) return isNodeInCodeBlock(host);
+    return false;
   }
 
   /**
