@@ -62,6 +62,29 @@ html.rtl-translator-active li {
   text-align: right;
 }
 
+/* ─── Preserve LTR for code & technical content ────
+     Code blocks, inline code, keyboard input, and
+     sample output must stay LTR and use a monospace
+     font so code alignment, indentation, and symbols
+     like // /*  are not broken.                    */
+html.rtl-translator-active code,
+html.rtl-translator-active pre,
+html.rtl-translator-active kbd,
+html.rtl-translator-active samp,
+html.rtl-translator-active tt {
+  direction: ltr !important;
+  unicode-bidi: embed !important;
+  text-align: left !important;
+}
+
+html.rtl-translator-active pre,
+html.rtl-translator-active code,
+html.rtl-translator-active kbd,
+html.rtl-translator-active samp,
+html.rtl-translator-active tt {
+  font-family: 'Cartograph CF', 'Courier New', 'Consolas', 'Monaco', monospace !important;
+}
+
 /* ─── Translation Banner ─────────────────────────────── */
 .rtl-translator-banner {
   position: fixed;

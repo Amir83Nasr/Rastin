@@ -34,7 +34,7 @@
 
   "web_accessible_resources": [
     {
-      "resources": ["fonts/*.ttf"],
+      "resources": ["fonts/IRANYekanX/*", "fonts/Cartograph CF/*"],
       "matches": ["<all_urls>"]
     }
   ],

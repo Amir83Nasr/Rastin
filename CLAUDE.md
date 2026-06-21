@@ -12,7 +12,7 @@ Rastin (راستین) is a Chrome extension that translates non-Persian web page
 - Classic service worker (NOT `type: module` — `importScripts` doesn't work in module workers)
 - Google Translate API (free, no key needed): `?client=gtx&sl=auto&tl=fa&dt=t&q=`
 - Inline SVG icons (custom Lucide-style, 12 paths) — no external icon library
-- Iran Yekan X font bundled in `fonts/`
+- Iran Yekan X font bundled in `fonts/IRANYekanX/`, Cartograph CF in `fonts/Cartograph CF/`
 
 ## Project Structure
 
@@ -20,7 +20,8 @@ Rastin (راستین) is a Chrome extension that translates non-Persian web page
 RTL Translator/
   _locales/en/messages.json     # English i18n
   _locales/fa/messages.json     # Persian i18n
-  fonts/                        # 3 TTF weights (Regular, Medium, DemiBold)
+  fonts/IRANYekanX/             # 3 TTF weights (Regular, Medium, DemiBold)
+  fonts/Cartograph CF/          # Programming font (CartographCF.otf)
   icons/icon.svg + icon.png     # Logo — SVG is source, PNG is fallback
   lib/
     errors.js                   # Shared error management (IIFE, sets self.RastinErrors)
@@ -47,6 +48,7 @@ RTL Translator/
 - Error codes: `TRANS_API_FAILURE`, `NETWORK_OFFLINE`, `STORAGE_READ_FAIL`, etc.
 - Auto-flushes to `chrome.storage.local` via microtask delay
 - Toast notification system (inline-styled, no CSS needed)
+- Toast types: `error` (red `#ef4444`), `warn` (amber `#d97706`), `success` (dark `#101010` + cream `#f3f4ed`), default `info` (blue `#2563eb`)
 - Usage: `RastinErrors.createLogger('module-name')`
 
 ### Content Script (`scripts/content.js`)
@@ -58,6 +60,34 @@ RTL Translator/
 - Banner UI with translate/RTL-only/dismiss/retry buttons
 - Domain state persistence via localStorage + chrome.storage
 - Retry logic: up to 2 retries with exponential backoff for translation API calls
+
+### Code-like Content Detection (3-layer system)
+
+A multi-layer detection system keeps programming identifiers, code blocks, CLI commands, and tech names from being translated or RTL-adjusted.
+
+**Layer 1 — Structural** (`isCodeElement`):
+
+- Checks each ancestor element up to `<body>` for code-related signals
+- HTML tags: `CODE`, `PRE`, `KBD`, `SAMP`, `TT` (in `SKIP_TAGS`)
+- CSS class signals: `font-mono`, `language-*`, `terminal`, `codeblock`, `syntax`, `hljs`, `shiki`, `prism`, `rehype-pretty`, …
+- Data-attribute signals: `data-rehype-pretty-code-fragment`, `data-language`, `data-code`, `data-terminal`, …
+- Skip-prefix classes: `rtl-translator-*`, `fa-*`, `notranslate`, `translate-ignore`
+- `data-notranslate` attribute
+
+**Layer 2 — Content Regex** (`isCodeLikeText`):
+
+- Version/pkg scopes: `shadcn@latest`, `@angular/core` → `/\S+@\S+/`
+- Code file extensions (≤40 chars, ≤3 words): `.json`, `.ts`, `.js`, `.jsx`, `.md`, `.yml`, …, `.config`
+- CLI flags: `-t`, `--option`, `--flag=value`
+- URLs: `https://…`
+- Semantic versions: `1.0.0`, `v2.3.4-beta`
+- Natural-language guard: skips texts starting with determiners/pronouns (`The`, `This`, `I`, `We`, `To`, …)
+
+**Layer 3 — Known Identifiers** (`TECH_IDENTIFIERS`, 137+ entries):
+Organized by ecosystem: JS/TS (react, vue, nextjs, zustand, …), PHP (laravel, symfony, …), Python (django, flask, tensorflow, …), Java/JVM (spring, kotlin, gradle, …), Go (golang, gin, …), Rust (cargo, tokio, …), .NET (dotnet, blazor, …), Mobile (flutter, swiftui, …), CSS/UI (tailwind, shadcn, mantine, …), Databases (postgresql, mongodb, redis, prisma, …), DevOps (docker, kubernetes, terraform, …), Cloud (aws, vercel, netlify, …), Editors (vscode, neovim, …), Tools (curl, esbuild, prettier, …), API (graphql, grpc, swagger, …), and more.
+
+- Normalization: lowercase + strip `.-_/` + spaces (so "React Router" → `reactrouter`)
+- Duplicates tolerated (Set overwrites), ~140 unique entries
 
 ### Background Service Worker (`scripts/background.js`)
 

@@ -6,7 +6,7 @@
 .githooks/
 
 # ── Assets ───────────────────────────────────
-fonts/*
+fonts/**
 icons/*.png
 icons/*.svg
 
