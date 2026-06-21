@@ -1,0 +1,53 @@
+# ── OS ─────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ── IDE / Editor ────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
+.vs/
+*.code-workspace
+
+# ── Chrome / Build ─────────────────────────────────────────
+*.crx
+*.pem
+*.zip
+*.xpi
+dist/
+build/
+*.log
+
+# ── Claude Code ────────────────────────────────────────────
+.claude/
+
+# ── Git ────────────────────────────────────────────────────
+.git/
+.gitattributes
+
+# ── Node / Dependencies ────────────────────────────────────
+node_modules/
+package.json
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ── Env ────────────────────────────────────────────────────
+.env
+.env.*
+*.local
+
+# ── Misc ───────────────────────────────────────────────────
+*.bak
+*.tmp
+.DS_Cleanup

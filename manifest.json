@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "__MSG_appName__",
   "short_name": "Rastin",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "__MSG_appDesc__",
   "default_locale": "en",
 
@@ -22,7 +22,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["scripts/content.js"],
+      "js": ["lib/errors.js", "lib/code-detection.js", "scripts/content.js"],
       "css": ["styles/content.css"],
       "run_at": "document_idle"
     }

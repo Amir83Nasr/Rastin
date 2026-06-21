@@ -6,130 +6,9 @@
 (function () {
   'use strict';
 
-  // ══════════════════════════════════════════════════
-  //   Error Management (standalone for content script)
-  // ══════════════════════════════════════════════════
-
-  var LOG_LEVEL = {
-    DEBUG: 0,
-    INFO: 1,
-    WARN: 2,
-    ERROR: 3,
-    FATAL: 4,
-  };
-  var LOG_LEVEL_NAME = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'FATAL'];
-
-  var ERR = {
-    TRANS_API_FAILURE: 'TRANS_API_FAILURE',
-    TRANS_BATCH_MISMATCH: 'TRANS_BATCH_MISMATCH',
-    TRANS_EMPTY_RESULT: 'TRANS_EMPTY_RESULT',
-    TRANS_NO_TEXT: 'TRANS_NO_TEXT',
-    TRANS_RATE_LIMIT: 'TRANS_RATE_LIMIT',
-    NETWORK_OFFLINE: 'NETWORK_OFFLINE',
-    NETWORK_HTTP_ERROR: 'NETWORK_HTTP_ERROR',
-    NETWORK_TIMEOUT: 'NETWORK_TIMEOUT',
-    FONT_INJECT_FAIL: 'FONT_INJECT_FAIL',
-    STORAGE_READ_FAIL: 'STORAGE_READ_FAIL',
-    STORAGE_WRITE_FAIL: 'STORAGE_WRITE_FAIL',
-    MSG_CONNECTION_FAIL: 'MSG_CONNECTION_FAIL',
-    STATE_CORRUPT: 'STATE_CORRUPT',
-    DOM_NODE_MISSING: 'DOM_NODE_MISSING',
-    UNKNOWN: 'UNKNOWN',
-  };
-
-  /**
-   * Simple structured logger for content script.
-   * Writes to console with consistent formatting and
-   * provides user-facing toast notifications.
-   */
-  function ContentLogger(module) {
-    this.module = module || 'content';
-    this._counts = { total: 0, byLevel: {}, byCode: {} };
-    for (var k in LOG_LEVEL) {
-      if (LOG_LEVEL.hasOwnProperty(k)) this._counts.byLevel[k] = 0;
-    }
-  }
-
-  ContentLogger.prototype._write = function (level, code, message, context) {
-    this._counts.total++;
-    this._counts.byLevel[level] = (this._counts.byLevel[level] || 0) + 1;
-    this._counts.byCode[code] = (this._counts.byCode[code] || 0) + 1;
-
-    var tag = '[Rastin][' + LOG_LEVEL_NAME[level] + '][' + code + ']';
-    var fn =
-      level >= LOG_LEVEL.ERROR
-        ? console.error
-        : level >= LOG_LEVEL.WARN
-          ? console.warn
-          : console.log;
-    fn(tag, message, context || '');
-  };
-
-  ContentLogger.prototype.info = function (code, msg, ctx) {
-    this._write(LOG_LEVEL.INFO, code, msg, ctx);
-  };
-  ContentLogger.prototype.warn = function (code, msg, ctx) {
-    this._write(LOG_LEVEL.WARN, code, msg, ctx);
-  };
-  ContentLogger.prototype.error = function (code, msg, ctx) {
-    this._write(LOG_LEVEL.ERROR, code, msg, ctx);
-  };
-
-  ContentLogger.prototype.notify = function (message, type, duration) {
-    if (typeof document === 'undefined' || !document.body) return;
-    type = type || 'info';
-    if (duration === undefined) duration = type === 'error' ? 6000 : 4000;
-
-    var container = document.querySelector('.rastin-toast-container');
-    if (!container) {
-      container = document.createElement('div');
-      container.className = 'rastin-toast-container';
-      container.style.cssText =
-        'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);' +
-        'z-index:2147483647;display:flex;flex-direction:column;gap:8px;' +
-        'pointer-events:none;';
-      document.body.appendChild(container);
-    }
-
-    var bgColor =
-      type === 'error'
-        ? '#ef4444'
-        : type === 'warn'
-          ? '#d97706'
-          : type === 'success'
-            ? '#101010'
-            : '#2563eb';
-    var textColor = type === 'success' ? '#f3f4ed' : '#fff';
-    var toast = document.createElement('div');
-    toast.style.cssText =
-      'background:' +
-      bgColor +
-      ';color:' +
-      textColor +
-      ';padding:10px 20px;border-radius:8px;' +
-      'font-family:IRANYekanX,Tahoma,sans-serif;font-size:13px;' +
-      'direction:rtl;box-shadow:0 4px 12px rgba(0,0,0,0.2);' +
-      'opacity:0;transform:translateY(8px);transition:all 0.3s ease;' +
-      'pointer-events:auto;max-width:360px;text-align:center;' +
-      'line-height:1.5;';
-    toast.textContent = message;
-    container.appendChild(toast);
-
-    requestAnimationFrame(function () {
-      toast.style.opacity = '1';
-      toast.style.transform = 'translateY(0)';
-    });
-
-    setTimeout(function () {
-      toast.style.opacity = '0';
-      toast.style.transform = 'translateY(8px)';
-      setTimeout(function () {
-        if (toast.parentNode) toast.remove();
-      }, 300);
-    }, duration);
-  };
-
-  var log = new ContentLogger('content');
+  // ─── Logger ────────────────────────────────────────────
+  var ERR = RastinErrors.CODE;
+  var log = RastinErrors.createLogger('content');
 
   // ─── Translation Cache ──────────────────────────────
   // In-memory cache for translated texts.
@@ -240,559 +119,12 @@
   const BATCH_SIZE = 30;
   const BATCH_CONCURRENCY = 3;
 
-  // ══════════════════════════════════════════════════
-  //   Code-like Content Detection
-  //   Multi-layer system to keep programming identifiers,
-  //   code blocks, CLI commands, and technical names
-  //   from being translated or RTL-adjusted.
-  //
-  //   Layer 1 — Structural:   HTML tag + CSS class / data-attribute
-  //                           context on element ancestors
-  //   Layer 2 — Content:      Regex patterns (versions, file paths,
-  //                           CLI flags, URLs, …)
-  //   Layer 3 — Identity:     Known tech proper nouns (pnpm, vite, …)
-  // ══════════════════════════════════════════════════
+  // ─── Code Detection (from module) ────────────────────
+  var shouldTranslateNode = CodeDetection.createShouldTranslateNode(SKIP_TAGS, SKIP_PREFIXES);
 
-  /**
-   * CSS class substrings strongly associated with code containers.
-   * Uses indexOf so partial matches work (e.g. "language-js" → "language-").
-   */
-  var CODE_CLASS_SIGNALS = [
-    'font-mono',
-    'language-',
-    'codeblock',
-    'code-block',
-    'code-fence',
-    'terminal',
-    'syntax',
-    'pretty-code',
-    'rehype-pretty',
-    'hljs',
-    'chroma',
-    'shiki',
-    'prism',
-    'highlight',
-    'linenumber',
-    'line-numbers',
-  ];
-
-  /**
-   * HTML data-* attributes that mark code containers.
-   */
-  var CODE_ATTR_SIGNALS = [
-    'data-rehype-pretty-code-fragment',
-    'data-rehype-pretty-code-title',
-    'data-language',
-    'data-code',
-    'data-code-block',
-    'data-terminal',
-  ];
-
-  /**
-   * Known tech identifiers — proper nouns common on programming
-   * documentation pages that must NOT be translated.
-   *
-   * Only names without a common English meaning are included,
-   * OR names that appear as standalone labels on doc sites
-   * (single-word text nodes are almost certainly labels, not sentences).
-   */
-  var TECH_IDENTIFIERS = (function () {
-    var set = {};
-    var words = [
-      // ── JavaScript / TypeScript ecosystem ──────────────
-      'react',
-      'reactjs',
-      'reactnative',
-      'reactrouter',
-      'reactquery',
-      'redux',
-      'zustand',
-      'pinia',
-      'mobx',
-      'recoil',
-      'jotai',
-      'xstate',
-      'rxjs',
-      'immer',
-      'reselect',
-      'vue',
-      'vuejs',
-      'vuex',
-      'vuetify',
-      'nuxt',
-      'nuxtjs',
-      'angular',
-      'angularjs',
-      'angularcli',
-      'svelte',
-      'sveltejs',
-      'sveltekit',
-      'solid',
-      'solidjs',
-      'solidstart',
-      'qwik',
-      'qwikcity',
-      'nextjs',
-      'nextauth',
-      'remix',
-      'remixjs',
-      'express',
-      'expressjs',
-      'jquery',
-      'axios',
-      'lodash',
-      'dayjs',
-      'momentjs',
-      'chartjs',
-      'd3js',
-      'threejs',
-      'gsap',
-
-      // ── Build tools / bundlers ─────────────────────────
-      'vite',
-      'vitest',
-      'webpack',
-      'rollup',
-      'esbuild',
-      'parcel',
-      'turbopack',
-      'gulp',
-      'grunt',
-      'nx',
-      'turbo',
-      'lerna',
-      'babel',
-      'swc',
-
-      // ── Runtimes / Platforms ───────────────────────────
-      'node',
-      'nodejs',
-      'deno',
-      'bun',
-
-      // ── Testing ────────────────────────────────────────
-      'jest',
-      'mocha',
-      'chai',
-      'jasmine',
-      'cypress',
-      'playwright',
-      'puppeteer',
-      'storybook',
-      'testinglibrary',
-
-      // ── Code quality / formatters ──────────────────────
-      'eslint',
-      'prettier',
-      'jshint',
-      'stylelint',
-      'husky',
-      'lintstaged',
-      'commitlint',
-      'typescript',
-      'javascript',
-      'ecmascript',
-
-      // ── Meta / full-stack frameworks ───────────────────
-      'astro',
-      'blitzjs',
-      'redwoodjs',
-      'gatsby',
-      'eleventy',
-      'meteor',
-      'sailsjs',
-      'adonisjs',
-      'strapi',
-      'ghost',
-      'keystonejs',
-      'fastify',
-      'hono',
-      'trpc',
-      'prisma',
-      'drizzle',
-      'typeorm',
-      'sequelize',
-      'supabase',
-      'firebase',
-
-      // ── CSS / UI frameworks ────────────────────────────
-      'tailwind',
-      'bootstrap',
-      'bulma',
-      'tachyons',
-      'foundation',
-      'materialize',
-      'materialui',
-      'mantine',
-      'chakra',
-      'radix',
-      'shadcn',
-      'shadcnui',
-      'headlessui',
-      'primereact',
-      'antdesign',
-      'daisyui',
-      'flowbite',
-      'semanticui',
-      'tanstack',
-
-      // ── PHP ecosystem ──────────────────────────────────
-      'laravel',
-      'artisan',
-      'composer',
-      'phpunit',
-      'symfony',
-      'codeigniter',
-      'cakephp',
-      'phalcon',
-      'slim',
-      'wordpress',
-      'drupal',
-      'joomla',
-      'magento',
-      'woocommerce',
-      'shopify',
-      'yii',
-      'zend',
-      'laminas',
-
-      // ── Python ecosystem ───────────────────────────────
-      'django',
-      'flask',
-      'fastapi',
-      'tornado',
-      'bottle',
-      'pyramid',
-      'pytest',
-      'celery',
-      'sqlalchemy',
-      'numpy',
-      'pandas',
-      'scipy',
-      'scikitlearn',
-      'tensorflow',
-      'pytorch',
-      'keras',
-      'jupyter',
-      'anaconda',
-      'poetry',
-      'pipenv',
-      'uvicorn',
-      'gunicorn',
-
-      // ── Ruby ecosystem ─────────────────────────────────
-      'rails',
-      'rubyonrails',
-      'sinatra',
-      'rspec',
-      'bundler',
-      'rubygems',
-      'rubocop',
-
-      // ── Java / JVM ─────────────────────────────────────
-      'spring',
-      'springboot',
-      'springframework',
-      'hibernate',
-      'tomcat',
-      'jetty',
-      'netty',
-      'gradle',
-      'maven',
-      'kotlin',
-      'groovy',
-      'scala',
-      'intellij',
-      'eclipse',
-      'netbeans',
-      'quarkus',
-      'micronaut',
-      'helidon',
-      'vertx',
-
-      // ── Go ecosystem ───────────────────────────────────
-      'golang',
-      'gin',
-      'echo',
-      'fiber',
-      'cobra',
-      'viper',
-      'gorilla',
-      'buffalo',
-
-      // ── Rust ecosystem ─────────────────────────────────
-      'tokio',
-      'actix',
-      'rocket',
-      'diesel',
-      'serde',
-      'clap',
-      'cargo',
-      'tauri',
-      'axum',
-
-      // ── .NET / C# ───────────────────────────────────────
-      'dotnet',
-      'aspnet',
-      'blazor',
-      'xamarin',
-      'maui',
-      'entityframework',
-      'dapper',
-      'nunit',
-      'xunit',
-      'serilog',
-      'automapper',
-      'unity',
-
-      // ── Mobile ─────────────────────────────────────────
-      'flutter',
-      'dart',
-      'kotlin',
-      'swift',
-      'swiftui',
-      'androidstudio',
-      'xcode',
-      'expo',
-      'capacitor',
-      'cordova',
-      'ionic',
-      'nativescript',
-
-      // ── Databases ──────────────────────────────────────
-      'mysql',
-      'postgresql',
-      'postgres',
-      'psql',
-      'mongodb',
-      'mongo',
-      'mongoose',
-      'sqlite',
-      'sqlserver',
-      'mssql',
-      'redis',
-      'elasticsearch',
-      'opensearch',
-      'mariadb',
-      'couchdb',
-      'cassandra',
-      'neo4j',
-      'dynamodb',
-      'cockroachdb',
-      'planetscale',
-      'neon',
-      'sqlalchemy',
-      'sequelize',
-      'typeorm',
-
-      // ── DevOps / Cloud / Infrastructure ────────────────
-      'docker',
-      'kubernetes',
-      'k8s',
-      'helm',
-      'nginx',
-      'apache',
-      'caddy',
-      'traefik',
-      'haproxy',
-      'terraform',
-      'ansible',
-      'puppet',
-      'chef',
-      'vagrant',
-      'jenkins',
-      'githubactions',
-      'gitlabci',
-      'circleci',
-      'travisci',
-      'argocd',
-      'fluxcd',
-      'prometheus',
-      'grafana',
-      'datadog',
-      'newrelic',
-      'sentry',
-
-      // ── Cloud providers ────────────────────────────────
-      'aws',
-      'azure',
-      'gcp',
-      'googlecloud',
-      'cloudflare',
-      'heroku',
-      'netlify',
-      'vercel',
-      'digitalocean',
-      'linode',
-      'vultr',
-      'hetzner',
-      'flyio',
-      'railway',
-      'render',
-
-      // ── Version control ────────────────────────────────
-      'git',
-      'svn',
-      'mercurial',
-      'github',
-      'gitlab',
-      'bitbucket',
-      'gitea',
-      'gitkraken',
-      'sourcetree',
-
-      // ── Editors / IDEs ─────────────────────────────────
-      'vscode',
-      'vim',
-      'neovim',
-      'emacs',
-      'webstorm',
-      'phpstorm',
-      'pycharm',
-      'goland',
-      'rubymine',
-      'sublime',
-      'atom',
-      'helix',
-
-      // ── API / Protocol ─────────────────────────────────
-      'graphql',
-      'apollo',
-      'relay',
-      'grpc',
-      'protobuf',
-      'swagger',
-      'openapi',
-      'postman',
-      'insomnia',
-      'socketio',
-      'websocket',
-
-      // ── Package managers (OS) ──────────────────────────
-      'pnpm',
-      'npm',
-      'npx',
-      'yarn',
-      'bun',
-      'brew',
-      'homebrew',
-      'choco',
-      'chocolatey',
-      'apt',
-      'aptget',
-      'yum',
-      'dnf',
-      'pacman',
-
-      // ── CLI tools / Utilities ──────────────────────────
-      'curl',
-      'wget',
-      'jq',
-      'ripgrep',
-      'zsh',
-      'bash',
-      'fish',
-
-      // ── Config / build terms ───────────────────────────
-      'eslintrc',
-      'prettierrc',
-      'babelrc',
-      'gitignore',
-      'npmrc',
-      'dockerfile',
-      'makefile',
-      'tsconfig',
-      'webpackconfig',
-    ];
-    for (var i = 0; i < words.length; i++) set[words[i]] = true;
-    return set;
-  })();
-
-  /**
-   * Check whether a single DOM element carries code-related
-   * CSS classes or data attributes (Layer 1 — structural).
-   *
-   * Returns true if any signal is found on the element itself.
-   * @param {Element} el
-   * @returns {boolean}
-   */
-  function isCodeElement(el) {
-    if (!el || !el.classList) return false;
-
-    var i, j;
-
-    // CSS class signals
-    for (i = 0; i < el.classList.length; i++) {
-      var cls = el.classList[i].toLowerCase();
-      for (j = 0; j < CODE_CLASS_SIGNALS.length; j++) {
-        if (cls.indexOf(CODE_CLASS_SIGNALS[j]) !== -1) return true;
-      }
-    }
-
-    // Data-attribute signals
-    if (el.hasAttribute) {
-      for (j = 0; j < CODE_ATTR_SIGNALS.length; j++) {
-        if (el.hasAttribute(CODE_ATTR_SIGNALS[j])) return true;
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Check whether text content looks like code / a technical
-   * identifier that should not be translated (Layers 2 & 3).
-   *
-   * @param {string} text
-   * @returns {boolean}  true when the text is code-like
-   */
-  function isCodeLikeText(text) {
-    if (!text) return false;
-    text = text.trim();
-    if (!text || text.length > 80) return false;
-
-    // Early exit: Persian characters → not code-like
-    if (/[؀-ۿ]/.test(text)) return false;
-
-    // Natural-language sentences almost always start with
-    // a determiner, pronoun, or article.  If we see one,
-    // the text is real content, not a code label.
-    if (/^(?:The|This|That|These|Those|We|You|They|It|I|A|An|To)\b/i.test(text)) return false;
-
-    // ── Layer 2: regex patterns ──────────────────────────
-
-    // Version / package scopes: shadcn@latest, @angular/core
-    if (/\S+@\S+/.test(text)) return true;
-
-    // Code file extensions: .json, .ts, .jsx, .tsx, .config, …
-    // Only match short text (≤40 chars) with ≤3 words to avoid
-    // catching sentences that mention a file type in passing.
-    if (
-      text.length <= 40 &&
-      text.split(/\s+/).length <= 3 &&
-      /\.(?:json|ts|js|jsx|tsx|css|scss|less|md|mdx|yml|yaml|toml|xml|html|svelte|vue|astro|mjs|cjs|env|config)\b/i.test(
-        text,
-      )
-    )
-      return true;
-
-    // CLI flags: -t, --option, --flag=value
-    if (/(?:^|\s)-{1,2}[a-zA-Z][\w-]*/.test(text)) return true;
-
-    // URLs
-    if (/https?:\/\/[\w.-]+/.test(text)) return true;
-
-    // Semantic version numbers: 1.0.0, v2.3, 1.0.0-beta
-    if (/\bv?\d+\.\d+\.\d+(?:-[\w.]+)?\b/.test(text)) return true;
-
-    // ── Layer 3: known tech identifiers ──────────────────
-    // Normalize: lowercase + strip programming symbols & spaces
-    // (spaces so "React Router" → "reactrouter" matches the set)
-    var normalized = text.toLowerCase().replace(/[.\-_/\s]/g, '');
-    if (TECH_IDENTIFIERS[normalized]) return true;
-
-    return false;
-  }
+  // ─── Rate-limit circuit breaker (429 streaks) ──────
+  var _rateLimitStreak = 0;
+  var RATE_LIMIT_CIRCUIT_MS = 3000;
 
   // ─── Font Injection (Iran Yekan X + Cartograph CF) ──
   function injectFonts() {
@@ -874,45 +206,8 @@
   }
 
   // ─── Text Node Filtering ─────────────────────────────
-  function shouldTranslateNode(node) {
-    if (!node || !node.parentNode) return false;
-    if (SKIP_TAGS.has(node.tagName)) return false;
-
-    var el = node;
-    while (el && el !== document.body) {
-      // ── Layer 1a — tag-based skip ──────────────────────
-      // Text nodes inside CODE / PRE / KBD / … must not translate
-      if (el.tagName && SKIP_TAGS.has(el.tagName)) return false;
-
-      if (el.classList && el.classList.length) {
-        // ── Layer 1b — skip prefixes (existing) ──────────
-        for (var i = 0; i < SKIP_PREFIXES.length; i++) {
-          for (var c = 0; c < el.classList.length; c++) {
-            if (el.classList[c].startsWith(SKIP_PREFIXES[i])) return false;
-          }
-        }
-
-        // ── Layer 1c — code CSS classes ──────────────────
-        if (isCodeElement(el)) return false;
-      } else {
-        // No classList but might still have data attributes
-        if (isCodeElement(el)) return false;
-      }
-
-      // ── Layer 1d — data-notranslate (existing) ────────
-      if (el.hasAttribute && el.hasAttribute('data-notranslate')) return false;
-
-      el = el.parentElement;
-    }
-
-    // ── Layers 2 & 3 — content patterns & identity ─────
-    if (node.nodeType === Node.TEXT_NODE) {
-      var txt = node.textContent.trim();
-      if (txt && isCodeLikeText(txt)) return false;
-    }
-
-    return true;
-  }
+  // shouldTranslateNode is provided by the CodeDetection module
+  // (initialized using SKIP_TAGS / SKIP_PREFIXES above)
 
   function isMeaningfulText(text) {
     var t = text.trim();
@@ -958,6 +253,45 @@
     return chunks;
   }
 
+  /**
+   * Determine which unique texts are visible in the viewport.
+   * Samples text-node parent elements (up to 200) with a 500px
+   * buffer around the viewport.  Used for progressive rendering.
+   * @param {Text[]} textNodes
+   * @returns {Set<string>|null}  set of visible unique texts,
+   *                              or null if too few nodes to bother
+   */
+  function getVisibleTexts(textNodes) {
+    if (!textNodes || textNodes.length < 30) return null;
+
+    var viewportHeight = window.innerHeight;
+    var visibleSet = {};
+    var seenParents = new WeakSet();
+    var samples = 0;
+    var MAX_SAMPLES = 200;
+    var BUFFER = 500;
+
+    for (var i = 0; i < textNodes.length && samples < MAX_SAMPLES; i++) {
+      var n = textNodes[i];
+      var parent = n.parentElement;
+      if (!parent || seenParents.has(parent)) continue;
+      seenParents.add(parent);
+      samples++;
+
+      try {
+        var rect = parent.getBoundingClientRect();
+        if (rect.top < viewportHeight + BUFFER && rect.bottom > -BUFFER) {
+          var t = n.textContent.trim();
+          if (t) visibleSet[t] = true;
+        }
+      } catch (_) {
+        // detached node — skip silently
+      }
+    }
+
+    return Object.keys(visibleSet).length > 0 ? visibleSet : null;
+  }
+
   // ─── Translation Engine ──────────────────────────────
 
   /**
@@ -988,20 +322,26 @@
 
         if (!resp.ok) {
           if (resp.status === 429) {
+            _rateLimitStreak++;
             log.warn(ERR.TRANS_RATE_LIMIT, 'Rate limited by Google Translate', {
               status: 429,
               attempt: attempt,
+              streak: _rateLimitStreak,
             });
-            // Rate limited — wait full backoff before retry
+            // Circuit breaker: after 3+ consecutive 429s, add extra delay
+            var circuitDelay = _rateLimitStreak >= 3 ? RATE_LIMIT_CIRCUIT_MS : 0;
             if (attempt < MAX_TRANS_RETRIES) {
               await new Promise(function (r) {
-                return setTimeout(r, RETRY_DELAY_MS * attempt * 2);
+                return setTimeout(r, RETRY_DELAY_MS * attempt * 2 + circuitDelay);
               });
             }
             continue;
           }
           throw new Error('HTTP ' + resp.status);
         }
+
+        // Success — reset rate-limit streak
+        _rateLimitStreak = 0;
 
         var data = await resp.json();
         if (data && data[0]) {
@@ -1079,6 +419,24 @@
     var translated = await translateText(combined);
     var parts = translated.split(SEP);
 
+    // Error recovery: if split result doesn't match expected count,
+    // retry each text individually to isolate problematic entries
+    if (parts.length !== uncached.length) {
+      log.warn(ERR.TRANS_BATCH_MISMATCH, 'Batch split mismatch, retrying individually', {
+        expected: uncached.length,
+        got: parts.length,
+      });
+      for (var r = 0; r < uncached.length; r++) {
+        var singleIdx = uncachedIndexes[r];
+        var singleOrig = texts[singleIdx];
+        var singleResult = await translateText(singleOrig);
+        results[singleIdx] = singleResult;
+        transCache[singleOrig] = singleResult;
+      }
+      persistTransCache();
+      return results;
+    }
+
     // Phase 3: fill in results & update cache
     for (var j = 0; j < uncached.length; j++) {
       var idx = uncachedIndexes[j];
@@ -1127,6 +485,18 @@
       });
 
       var uniqueTexts = Object.keys(textMap);
+
+      // Progressive rendering: sort visible texts first so the
+      // worker pool processes them before off-screen content.
+      var visibleTexts = getVisibleTexts(textNodes);
+      if (visibleTexts) {
+        uniqueTexts.sort(function (a, b) {
+          var aVis = visibleTexts[a] ? 0 : 1;
+          var bVis = visibleTexts[b] ? 0 : 1;
+          return aVis - bVis;
+        });
+      }
+
       var chunks = chunkArray(uniqueTexts, BATCH_SIZE);
       var batchResults;
 
@@ -1163,23 +533,49 @@
       }
       await Promise.all(workers);
 
-      // ── Phase 2: sequential DOM updates ──────────────────
-      // DOM must be updated sequentially to avoid race
-      // conditions on shared text nodes.
+      // ── Phase 2: batch DOM updates via requestAnimationFrame ──
+      // Collect all (node → translation) updates into closures,
+      // then apply them inside rAF so the browser batches all
+      // style invalidations into one layout pass per frame.
       var translatedCount = 0;
+      var domUpdates = [];
+      var BATCH_DOM_PER_FRAME = 500;
+
       for (var ci = 0; ci < chunks.length; ci++) {
         var chunk = chunks[ci];
-        var translated = batchResults[ci] || chunk; // fallback to original
+        var translated = batchResults[ci] || chunk;
         for (var ti = 0; ti < chunk.length; ti++) {
           var original = chunk[ti];
           var translation = translated[ti];
           if (translation && translation !== original) {
             var nodes = textMap[original] || [];
             for (var ni = 0; ni < nodes.length; ni++) {
-              nodes[ni].textContent = nodes[ni].textContent.replace(original, translation);
+              (function (n, o, t) {
+                domUpdates.push(function () {
+                  if (n.textContent === o) {
+                    n.textContent = t;
+                  } else {
+                    n.textContent = n.textContent.replace(o, t);
+                  }
+                });
+              })(nodes[ni], original, translation);
             }
             translatedCount++;
           }
+        }
+      }
+
+      // Apply DOM updates in rAF batches (one frame per batch)
+      if (domUpdates.length > 0) {
+        for (var start = 0; start < domUpdates.length; start += BATCH_DOM_PER_FRAME) {
+          var end = Math.min(start + BATCH_DOM_PER_FRAME, domUpdates.length);
+          var frameBatch = domUpdates.slice(start, end);
+          await new Promise(function (resolve) {
+            requestAnimationFrame(function () {
+              for (var i = 0; i < frameBatch.length; i++) frameBatch[i]();
+              resolve();
+            });
+          });
         }
       }
 
