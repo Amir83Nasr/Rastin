@@ -988,6 +988,22 @@
   var CODE_LTR_TAGS = ['CODE', 'PRE', 'KBD', 'SAMP', 'TT'];
 
   /**
+   * Call a function on every code/pre/kbd/samp/tt element reachable from
+   * `root`, including those inside shadow-DOM trees (querySelectorAll
+   * alone can't cross shadow boundaries).
+   */
+  function forEachCodeElement(root, fn) {
+    var codeSelector = CODE_LTR_TAGS.map(function (t) {
+      return t.toLowerCase();
+    }).join(',');
+    root.querySelectorAll(codeSelector).forEach(fn);
+    // Descend into shadow roots recursively
+    root.querySelectorAll('*').forEach(function (el) {
+      if (el.shadowRoot) forEachCodeElement(el.shadowRoot, fn);
+    });
+  }
+
+  /**
    * Apply RTL to the page (or to a scoped container on site-specific pages
    * like GitHub README — keeping site chrome/navigation LTR).
    *
@@ -1009,21 +1025,13 @@
         document.documentElement.classList.add('rtl-translator-active');
       }
 
-      // Force LTR on code blocks (scoped or full-page)
-      var codeSelector = CODE_LTR_TAGS.map(function (t) {
-        return t.toLowerCase();
-      }).join(',');
-      var codeEls = isScoped
-        ? root.querySelectorAll(codeSelector)
-        : document.querySelectorAll(codeSelector);
-      for (var ci = 0; ci < codeEls.length; ci++) {
-        var el = codeEls[ci];
-        // Skip if already explicitly LTR or RTL
+      // Force LTR on code blocks — including those inside shadow DOM
+      forEachCodeElement(isScoped ? root : document.documentElement, function (el) {
         var cur = el.getAttribute('dir');
-        if (cur === 'ltr' || cur === 'rtl') continue;
+        if (cur === 'ltr' || cur === 'rtl') return;
         el.setAttribute('data-rastin-dir', cur || '');
         el.setAttribute('dir', 'ltr');
-      }
+      });
     } catch (err) {
       log.error(ERR.RTL_APPLY_FAIL, 'Failed to apply RTL class', {
         error: err.message,
@@ -1041,8 +1049,12 @@
       document.documentElement.classList.remove('rtl-translator-active');
     }
 
-    // Restore original dir on code blocks
-    var marked = document.querySelectorAll('[data-rastin-dir]');
+    // Find all code elements with data-rastin-dir across shadow boundaries
+    var marked = [];
+    forEachCodeElement(document.documentElement, function (el) {
+      if (el.hasAttribute('data-rastin-dir')) marked.push(el);
+    });
+
     for (var i = 0; i < marked.length; i++) {
       var el = marked[i];
       var orig = el.getAttribute('data-rastin-dir');
