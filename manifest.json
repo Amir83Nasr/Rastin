@@ -22,7 +22,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["lib/errors.js", "lib/code-detection.js", "scripts/content.js"],
+      "js": ["lib/errors.js", "scripts/code-detection.js", "scripts/content.js"],
       "css": ["styles/content.css"],
       "run_at": "document_idle"
     }

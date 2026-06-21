@@ -16,7 +16,7 @@ Rastin (راستین) is a Chrome extension that translates non-Persian web page
 
 ## Project Structure
 
-```
+```text
 RTL Translator/
   _locales/en/messages.json     # English i18n
   _locales/fa/messages.json     # Persian i18n
@@ -25,15 +25,17 @@ RTL Translator/
   icons/icon.svg + icon.png     # Logo — SVG is source, PNG is fallback
   lib/
     errors.js                   # Shared error management (IIFE, sets self.RastinErrors)
-    icons.js                    # SVG icon system (mountIcons, createIcon)
-  popup/popup.html              # Popup UI
+  popup/                        # Popup — all files together
+    popup.html                  #   Popup UI
+    popup.js                    #   Popup script — status, controls
+    popup.css                   #   Popup styles (themed)
+    icons.js                    #   SVG icon system (mountIcons, createIcon)
   scripts/
     content.js                  # Content script — translation, RTL, banner
-    popup.js                    # Popup script — status, controls
     background.js               # Service worker — install, menus, shortcuts
+    code-detection.js           # Code detection — Layers 1-3 (shouldTranslateNode)
   styles/
     content.css                 # Content styles (RTL + banner)
-    popup.css                   # Popup styles (themed)
   .githooks/pre-commit          # Prettier auto-format hook
   manifest.json                 # Extension entry point
   CLAUDE.md                     # This file
@@ -56,16 +58,17 @@ RTL Translator/
 - Self-contained IIFE with inline `ContentLogger` class
 - Language detection via `html[lang]`, `<meta name="language">`, and Persian char sampling (؀-ۿ range)
 - Translation: batch with `|||` separator, dedup via textMap, 30 texts/batch (`BATCH_SIZE`)
-- Translation cache: in-memory `transCache` + localStorage per-domain with 24h expiry, flushes every 20 unique translations
+- Translation cache: in-memory `transCache` + `chrome.storage.session` (MV3 in-memory, shared across all tabs, no manual expiry, async I/O), debounced microtask flush
 - Parallel batch processing: 3 concurrent fetch workers (`BATCH_CONCURRENCY`), two-phase pipeline (parallel API → sequential DOM)
-- Font injection via JavaScript (`chrome.runtime.getURL`) — CSS can't use extension URLs
+- Font injection via JavaScript (`chrome.runtime.getURL`) — CSS can't use extension URLs; also injects `<link rel="preconnect">` to Google Translate API to reduce connection setup latency
 - Banner UI with translate/RTL-only/dismiss/retry buttons
 - Domain state persistence via localStorage + chrome.storage
 - Retry logic: up to 2 retries with exponential backoff for translation API calls
-- DOM injection via `requestAnimationFrame` batching (500 updates/frame) — avoids per-node layout invalidation
-- Progressive rendering: visible-first chunk ordering via `getBoundingClientRect` sampling (capped at 200 parents, 500px viewport buffer)
+- DOM injection via `requestAnimationFrame` batching (500 updates/frame), extracted as `applyTranslationDOMUpdates()` helper — used for both priority and deferred chunks
+- Progressive rendering: visible-first chunk ordering via `getBoundingClientRect` sampling (capped at 200 parents, 500px viewport buffer), off-screen chunks deferred via `requestIdleCallback` chain (3s timeout fallback) — frees API bandwidth for visible content
 - Error recovery: batch `|||` split mismatch → retry each text individually; 429 circuit-breaker adds 3s delay after 3+ consecutive rate limits
 - **No-page-reload restore**: `_originalTexts` Map (TextNode → pre-translation text) saved at DOM collection time; `removeTranslation()` / `resetAll()` restore original content instantly without reloading the page; `get_status` exposes `hasOriginals` flag
+- **Font persistence**: `ensurePersistedFont()` / `removePersistedFont()` injects font-family rules scoped to `html.rtl-translator-has-fa` — independent of RTL toggle, so Persian text stays readable even when RTL is off
 
 ### Code-like Content Detection (3-layer system)
 

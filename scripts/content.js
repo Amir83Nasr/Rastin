@@ -13,42 +13,48 @@
   // ─── Translation Cache ──────────────────────────────
   // In-memory cache for translated texts.
   // Key: original text, Value: translated text.
-  // Persisted to chrome.storage.local per domain for fast re-visits.
+  // Persisted to chrome.storage.session (MV3 in-memory, shared across
+  // all tabs of this extension — no manual expiry needed).
   var transCache = Object.create(null);
-  var CACHE_KEY_PREFIX = 'rtl_cache_v1_';
+  var SESSION_CACHE_KEY = 'rtl_trans_cache';
 
-  function loadTransCache() {
-    try {
-      var domain = window.location.hostname.replace(/[^a-z0-9]/g, '_');
-      var key = CACHE_KEY_PREFIX + domain;
-      var stored = localStorage.getItem(key);
-      if (stored) {
-        var data = JSON.parse(stored);
-        // Expire cache after 24 hours
-        if (data.ts && Date.now() - data.ts < 86400000 && data.cache) {
-          transCache = data.cache;
-          log.info(null, 'Loaded ' + Object.keys(transCache).length + ' cached translations');
-        } else {
-          localStorage.removeItem(key);
-        }
+  /** Load cache from chrome.storage.session into transCache. */
+  function sessionLoadCache() {
+    return new Promise(function (resolve) {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) {
+        resolve();
+        return;
       }
-    } catch (e) {
-      // Silent — cache is a nice-to-have
-    }
+      chrome.storage.session.get([SESSION_CACHE_KEY], function (result) {
+        try {
+          var stored = result[SESSION_CACHE_KEY];
+          if (stored) {
+            transCache = stored;
+            log.info(null, 'Loaded ' + Object.keys(transCache).length + ' cached translations');
+          }
+        } catch (_) {
+          /* best-effort */
+        }
+        resolve();
+      });
+    });
   }
 
-  function persistTransCache() {
-    try {
-      var domain = window.location.hostname.replace(/[^a-z0-9]/g, '_');
-      var key = CACHE_KEY_PREFIX + domain;
-      localStorage.setItem(key, JSON.stringify({ ts: Date.now(), cache: transCache }));
-    } catch (e) {
-      // Silent — quota exceeded, just don't persist
-    }
+  /** Debounced persist: batches rapid writes into one async save. */
+  var _cachePersistPending = false;
+  function sessionPersistCache() {
+    if (_cachePersistPending) return;
+    _cachePersistPending = true;
+    Promise.resolve().then(function () {
+      _cachePersistPending = false;
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) return;
+      var data = {};
+      data[SESSION_CACHE_KEY] = transCache;
+      chrome.storage.session.set(data, function () {
+        /* best-effort */
+      });
+    });
   }
-
-  // Load cache on init
-  loadTransCache();
 
   // ─── State ───────────────────────────────────────────
   const STATE = {
@@ -164,6 +170,14 @@
         "') format('opentype');" +
         'font-weight:400;font-style:normal;font-display:swap;}';
       document.head.appendChild(style);
+
+      // Preconnect to Google Translate API — shaves ~100-300ms
+      // off the first translation request by doing DNS + TCP + TLS
+      // handshake early.
+      var preconnect = document.createElement('link');
+      preconnect.rel = 'preconnect';
+      preconnect.href = 'https://translate.googleapis.com';
+      document.head.appendChild(preconnect);
     } catch (err) {
       log.error(ERR.FONT_INJECT_FAIL, 'Failed to inject fonts', {
         error: err.message,
@@ -438,7 +452,7 @@
         results[singleIdx] = singleResult;
         transCache[singleOrig] = singleResult;
       }
-      persistTransCache();
+      sessionPersistCache();
       return results;
     }
 
@@ -453,9 +467,115 @@
     }
 
     // Periodically persist cache (every 20 unique translations)
-    persistTransCache();
+    sessionPersistCache();
 
     return results;
+  }
+
+  // ─── DOM Update Helper (rAF-batched) ──────────────────
+  /**
+   * Build DOM-update closures from chunk results and apply
+   * them via requestAnimationFrame (500 updates per frame).
+   * @returns {number}  count of unique texts that changed
+   */
+  function applyTranslationDOMUpdates(chunks, batchResults, textMap) {
+    var domUpdates = [];
+    var translated = 0;
+    var BATCH_DOM_PER_FRAME = 500;
+
+    for (var ci = 0; ci < chunks.length; ci++) {
+      var chunk = chunks[ci];
+      var result = batchResults[ci] || chunk;
+      for (var ti = 0; ti < chunk.length; ti++) {
+        var original = chunk[ti];
+        var translation = result[ti];
+        if (translation && translation !== original) {
+          var nodes = textMap[original] || [];
+          for (var ni = 0; ni < nodes.length; ni++) {
+            (function (n, o, t) {
+              // Save original text for restoration (first time only)
+              if (!_originalTexts) _originalTexts = new Map();
+              if (!_originalTexts.has(n)) {
+                _originalTexts.set(n, n.textContent);
+              }
+              domUpdates.push(function () {
+                if (n.textContent === o) {
+                  n.textContent = t;
+                } else {
+                  n.textContent = n.textContent.replace(o, t);
+                }
+              });
+            })(nodes[ni], original, translation);
+          }
+          translated++;
+        }
+      }
+    }
+
+    if (domUpdates.length === 0) return translated;
+
+    // Apply closures in rAF batches (one frame per batch)
+    // Use a simple sequential loop since rAF callbacks are already async
+    var applyNext = function (start) {
+      return new Promise(function (resolve) {
+        if (start >= domUpdates.length) {
+          resolve();
+          return;
+        }
+        var end = Math.min(start + BATCH_DOM_PER_FRAME, domUpdates.length);
+        requestAnimationFrame(function () {
+          for (var i = start; i < end; i++) domUpdates[i]();
+          resolve(applyNext(end));
+        });
+      });
+    };
+
+    return applyNext(0).then(function () {
+      return translated;
+    });
+  }
+
+  // ─── Deferred Chunks via requestIdleCallback ──────────
+  /**
+   * Process deferred (off-screen) chunks one at a time via
+   * requestIdleCallback with a 3-second timeout fallback so
+   * visible content gets 100% of the API bandwidth first.
+   * Each chunk's DOM updates are applied via rAF before the
+   * next idle callback fires.
+   */
+  function scheduleDeferredChunks(chunks, batchResults, resultOffset, textMap) {
+    var idx = 0;
+
+    function processNext() {
+      return new Promise(function (resolve) {
+        if (idx >= chunks.length) {
+          resolve();
+          return;
+        }
+
+        var chunkIdx = idx++;
+        requestIdleCallback(
+          function () {
+            // Kick off async translation work
+            resolve(
+              translateBatch(chunks[chunkIdx])
+                .then(function (translatedBatch) {
+                  batchResults[resultOffset + chunkIdx] = translatedBatch;
+                  // Apply this single chunk's DOM updates via rAF
+                  return applyTranslationDOMUpdates([chunks[chunkIdx]], [translatedBatch], textMap);
+                })
+                .then(function () {
+                  // Schedule the next chunk
+                  return processNext();
+                }),
+            );
+          },
+          { timeout: 3000 },
+        );
+      });
+    }
+
+    return processNext();
   }
 
   // ─── Translate Page ─────────────────────────────────
@@ -502,90 +622,82 @@
         });
       }
 
-      var chunks = chunkArray(uniqueTexts, BATCH_SIZE);
-      var batchResults;
+      // ── Split into priority (visible) and deferred (off-screen) ──
+      var splitIdx = uniqueTexts.length;
+      if (visibleTexts) {
+        for (var si = 0; si < uniqueTexts.length; si++) {
+          if (!visibleTexts[uniqueTexts[si]]) {
+            splitIdx = si;
+            break;
+          }
+        }
+      }
+      var priorityTexts = uniqueTexts.slice(0, splitIdx);
+      var deferredTexts = uniqueTexts.slice(splitIdx);
+
+      var priorityChunks = chunkArray(priorityTexts, BATCH_SIZE);
+      var deferredChunks = chunkArray(deferredTexts, BATCH_SIZE);
 
       log.info(
         null,
         'Translating ' +
-          uniqueTexts.length +
-          ' unique texts in ' +
-          chunks.length +
-          ' batches (concurrency: ' +
-          BATCH_CONCURRENCY +
-          ')',
+          priorityTexts.length +
+          ' priority + ' +
+          deferredTexts.length +
+          ' deferred texts across ' +
+          (priorityChunks.length + deferredChunks.length) +
+          ' batches',
       );
 
-      // ── Phase 1: parallel API calls ──────────────────────
-      // Run up to BATCH_CONCURRENCY translateBatch calls in
-      // parallel.  Each batch is independent, so no races.
-      batchResults = new Array(chunks.length);
-      var chunkQueue = chunks.map(function (chunk, idx) {
-        return { chunk: chunk, idx: idx };
-      });
-
-      async function batchWorker() {
-        while (chunkQueue.length) {
-          var item = chunkQueue.shift();
-          batchResults[item.idx] = await translateBatch(item.chunk);
-        }
-      }
-
-      var workers = [];
-      var workerCount = Math.min(BATCH_CONCURRENCY, chunks.length);
-      for (var w = 0; w < workerCount; w++) {
-        workers.push(batchWorker());
-      }
-      await Promise.all(workers);
-
-      // ── Phase 2: batch DOM updates via requestAnimationFrame ──
-      // Collect all (node → translation) updates into closures,
-      // then apply them inside rAF so the browser batches all
-      // style invalidations into one layout pass per frame.
+      // ── Phase 1: translate priority chunks (parallel workers) ──
+      var allBatchResults = [];
       var translatedCount = 0;
-      var domUpdates = [];
-      var BATCH_DOM_PER_FRAME = 500;
 
-      for (var ci = 0; ci < chunks.length; ci++) {
-        var chunk = chunks[ci];
-        var translated = batchResults[ci] || chunk;
-        for (var ti = 0; ti < chunk.length; ti++) {
-          var original = chunk[ti];
-          var translation = translated[ti];
-          if (translation && translation !== original) {
-            var nodes = textMap[original] || [];
-            for (var ni = 0; ni < nodes.length; ni++) {
-              (function (n, o, t) {
-                // Save original text for restoration (first time only)
-                if (!_originalTexts) _originalTexts = new Map();
-                if (!_originalTexts.has(n)) {
-                  _originalTexts.set(n, n.textContent);
-                }
-                domUpdates.push(function () {
-                  if (n.textContent === o) {
-                    n.textContent = t;
-                  } else {
-                    n.textContent = n.textContent.replace(o, t);
-                  }
-                });
-              })(nodes[ni], original, translation);
-            }
-            translatedCount++;
+      if (priorityChunks.length > 0) {
+        allBatchResults = new Array(priorityChunks.length);
+        var chunkQueue = priorityChunks.map(function (chunk, idx) {
+          return { chunk: chunk, idx: idx };
+        });
+
+        async function batchWorker() {
+          while (chunkQueue.length) {
+            var item = chunkQueue.shift();
+            allBatchResults[item.idx] = await translateBatch(item.chunk);
           }
         }
+
+        var workers = [];
+        var workerCount = Math.min(BATCH_CONCURRENCY, priorityChunks.length);
+        for (var w = 0; w < workerCount; w++) {
+          workers.push(batchWorker());
+        }
+        await Promise.all(workers);
+
+        // ── Phase 1B: rAF DOM updates for priority chunks ──
+        translatedCount += await applyTranslationDOMUpdates(
+          priorityChunks,
+          allBatchResults,
+          textMap,
+        );
       }
 
-      // Apply DOM updates in rAF batches (one frame per batch)
-      if (domUpdates.length > 0) {
-        for (var start = 0; start < domUpdates.length; start += BATCH_DOM_PER_FRAME) {
-          var end = Math.min(start + BATCH_DOM_PER_FRAME, domUpdates.length);
-          var frameBatch = domUpdates.slice(start, end);
-          await new Promise(function (resolve) {
-            requestAnimationFrame(function () {
-              for (var i = 0; i < frameBatch.length; i++) frameBatch[i]();
-              resolve();
-            });
-          });
+      // ── Phase 2: deferred chunks via requestIdleCallback ──
+      if (deferredChunks.length > 0) {
+        await scheduleDeferredChunks(
+          deferredChunks,
+          allBatchResults,
+          priorityChunks.length,
+          textMap,
+        );
+        // Count translated from deferred results
+        var deferredResults = allBatchResults.slice(priorityChunks.length);
+        for (var dr = 0; dr < deferredResults.length; dr++) {
+          if (deferredResults[dr]) {
+            for (var dt = 0; dt < deferredChunks[dr].length; dt++) {
+              if (deferredResults[dr][dt] && deferredResults[dr][dt] !== deferredChunks[dr][dt])
+                translatedCount++;
+            }
+          }
         }
       }
 
@@ -594,7 +706,11 @@
       if (translatedCount > 0) {
         log.info(
           null,
-          'Translated ' + translatedCount + ' unique texts across ' + chunks.length + ' batches',
+          'Translated ' +
+            translatedCount +
+            ' unique texts across ' +
+            (priorityChunks.length + deferredChunks.length) +
+            ' batches',
         );
       } else {
         log.info(null, 'No new translations applied (all texts were already Persian)');
@@ -947,6 +1063,7 @@
   // ─── Init ────────────────────────────────────────────
   async function init() {
     injectFonts();
+    await sessionLoadCache();
 
     if (isPersianPage()) {
       STATE.langDetected = 'فارسی';
