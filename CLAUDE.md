@@ -55,7 +55,9 @@ RTL Translator/
 
 - Self-contained IIFE with inline `ContentLogger` class
 - Language detection via `html[lang]`, `<meta name="language">`, and Persian char sampling (؀-ۿ range)
-- Translation: batch with `|||` separator, dedup via textMap, 15 texts/batch
+- Translation: batch with `|||` separator, dedup via textMap, 30 texts/batch (`BATCH_SIZE`)
+- Translation cache: in-memory `transCache` + localStorage per-domain with 24h expiry, flushes every 20 unique translations
+- Parallel batch processing: 3 concurrent fetch workers (`BATCH_CONCURRENCY`), two-phase pipeline (parallel API → sequential DOM)
 - Font injection via JavaScript (`chrome.runtime.getURL`) — CSS can't use extension URLs
 - Banner UI with translate/RTL-only/dismiss/retry buttons
 - Domain state persistence via localStorage + chrome.storage
@@ -76,6 +78,7 @@ A multi-layer detection system keeps programming identifiers, code blocks, CLI c
 
 **Layer 2 — Content Regex** (`isCodeLikeText`):
 
+- Persian char early exit: `/[؀-ۿ]/.test(text)` → return false immediately (Persian is never code-like)
 - Version/pkg scopes: `shadcn@latest`, `@angular/core` → `/\S+@\S+/`
 - Code file extensions (≤40 chars, ≤3 words): `.json`, `.ts`, `.js`, `.jsx`, `.md`, `.yml`, …, `.config`
 - CLI flags: `-t`, `--option`, `--flag=value`

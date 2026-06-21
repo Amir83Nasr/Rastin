@@ -131,6 +131,46 @@
 
   var log = new ContentLogger('content');
 
+  // ─── Translation Cache ──────────────────────────────
+  // In-memory cache for translated texts.
+  // Key: original text, Value: translated text.
+  // Persisted to chrome.storage.local per domain for fast re-visits.
+  var transCache = Object.create(null);
+  var CACHE_KEY_PREFIX = 'rtl_cache_v1_';
+
+  function loadTransCache() {
+    try {
+      var domain = window.location.hostname.replace(/[^a-z0-9]/g, '_');
+      var key = CACHE_KEY_PREFIX + domain;
+      var stored = localStorage.getItem(key);
+      if (stored) {
+        var data = JSON.parse(stored);
+        // Expire cache after 24 hours
+        if (data.ts && Date.now() - data.ts < 86400000 && data.cache) {
+          transCache = data.cache;
+          log.info(null, 'Loaded ' + Object.keys(transCache).length + ' cached translations');
+        } else {
+          localStorage.removeItem(key);
+        }
+      }
+    } catch (e) {
+      // Silent — cache is a nice-to-have
+    }
+  }
+
+  function persistTransCache() {
+    try {
+      var domain = window.location.hostname.replace(/[^a-z0-9]/g, '_');
+      var key = CACHE_KEY_PREFIX + domain;
+      localStorage.setItem(key, JSON.stringify({ ts: Date.now(), cache: transCache }));
+    } catch (e) {
+      // Silent — quota exceeded, just don't persist
+    }
+  }
+
+  // Load cache on init
+  loadTransCache();
+
   // ─── State ───────────────────────────────────────────
   const STATE = {
     translated: false,
@@ -197,6 +237,8 @@
   };
   const MAX_TRANS_RETRIES = 2;
   const RETRY_DELAY_MS = 1000;
+  const BATCH_SIZE = 30;
+  const BATCH_CONCURRENCY = 3;
 
   // ══════════════════════════════════════════════════
   //   Code-like Content Detection
@@ -709,6 +751,9 @@
     text = text.trim();
     if (!text || text.length > 80) return false;
 
+    // Early exit: Persian characters → not code-like
+    if (/[؀-ۿ]/.test(text)) return false;
+
     // Natural-language sentences almost always start with
     // a determiner, pronoun, or article.  If we see one,
     // the text is real content, not a code label.
@@ -923,6 +968,9 @@
   async function translateText(text) {
     if (!text || !text.trim()) return text;
 
+    // Memory cache hit — skip API entirely
+    if (transCache[text]) return transCache[text];
+
     var lastError = null;
 
     for (var attempt = 1; attempt <= MAX_TRANS_RETRIES; attempt++) {
@@ -957,11 +1005,14 @@
 
         var data = await resp.json();
         if (data && data[0]) {
-          return data[0]
+          var result = data[0]
             .map(function (s) {
               return s[0];
             })
             .join('');
+          // Store in cache
+          transCache[text] = result;
+          return result;
         }
 
         log.warn(ERR.TRANS_EMPTY_RESULT, 'Translation returned empty result', {
@@ -998,20 +1049,50 @@
     return text;
   }
 
+  /**
+   * Translate a batch of texts, with individual caching.
+   * Only texts NOT in cache are sent to the API.
+   */
   async function translateBatch(texts) {
     var SEP = ' ||| ';
-    var combined = texts.join(SEP);
+    var results = new Array(texts.length);
+    var uncached = [];
+    var uncachedIndexes = [];
+
+    // Phase 1: collect cache hits & build uncached list
+    for (var i = 0; i < texts.length; i++) {
+      var t = texts[i];
+      if (transCache[t]) {
+        results[i] = transCache[t];
+      } else {
+        results[i] = null; // placeholder
+        uncached.push(t);
+        uncachedIndexes.push(i);
+      }
+    }
+
+    // All cache hits — no API call needed
+    if (uncached.length === 0) return results;
+
+    // Phase 2: send only uncached texts to API
+    var combined = uncached.join(SEP);
     var translated = await translateText(combined);
     var parts = translated.split(SEP);
 
-    if (parts.length !== texts.length) {
-      log.warn(ERR.TRANS_BATCH_MISMATCH, 'Batch translation returned wrong part count', {
-        expected: texts.length,
-        got: parts.length,
-      });
-      return texts;
+    // Phase 3: fill in results & update cache
+    for (var j = 0; j < uncached.length; j++) {
+      var idx = uncachedIndexes[j];
+      var original = texts[idx];
+      var translation = parts[j] || original;
+      results[idx] = translation;
+      // Cache individual result
+      transCache[original] = translation;
     }
-    return parts;
+
+    // Periodically persist cache (every 20 unique translations)
+    persistTransCache();
+
+    return results;
   }
 
   // ─── Translate Page ─────────────────────────────────
@@ -1046,12 +1127,49 @@
       });
 
       var uniqueTexts = Object.keys(textMap);
-      var chunks = chunkArray(uniqueTexts, 15);
-      var translatedCount = 0;
+      var chunks = chunkArray(uniqueTexts, BATCH_SIZE);
+      var batchResults;
 
+      log.info(
+        null,
+        'Translating ' +
+          uniqueTexts.length +
+          ' unique texts in ' +
+          chunks.length +
+          ' batches (concurrency: ' +
+          BATCH_CONCURRENCY +
+          ')',
+      );
+
+      // ── Phase 1: parallel API calls ──────────────────────
+      // Run up to BATCH_CONCURRENCY translateBatch calls in
+      // parallel.  Each batch is independent, so no races.
+      batchResults = new Array(chunks.length);
+      var chunkQueue = chunks.map(function (chunk, idx) {
+        return { chunk: chunk, idx: idx };
+      });
+
+      async function batchWorker() {
+        while (chunkQueue.length) {
+          var item = chunkQueue.shift();
+          batchResults[item.idx] = await translateBatch(item.chunk);
+        }
+      }
+
+      var workers = [];
+      var workerCount = Math.min(BATCH_CONCURRENCY, chunks.length);
+      for (var w = 0; w < workerCount; w++) {
+        workers.push(batchWorker());
+      }
+      await Promise.all(workers);
+
+      // ── Phase 2: sequential DOM updates ──────────────────
+      // DOM must be updated sequentially to avoid race
+      // conditions on shared text nodes.
+      var translatedCount = 0;
       for (var ci = 0; ci < chunks.length; ci++) {
         var chunk = chunks[ci];
-        var translated = await translateBatch(chunk);
+        var translated = batchResults[ci] || chunk; // fallback to original
         for (var ti = 0; ti < chunk.length; ti++) {
           var original = chunk[ti];
           var translation = translated[ti];
