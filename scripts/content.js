@@ -988,15 +988,24 @@
   var CODE_LTR_TAGS = ['CODE', 'PRE', 'KBD', 'SAMP', 'TT'];
 
   /**
-   * Call a function on every code/pre/kbd/samp/tt element reachable from
-   * `root`, including those inside shadow-DOM trees (querySelectorAll
-   * alone can't cross shadow boundaries).
+   * Call a function on every code-block element reachable from `root`,
+   * including those inside shadow-DOM trees (querySelectorAll alone
+   * can't cross shadow boundaries).
+   *
+   * Covers both the inner code tags (pre/code/kbd/samp/tt) and the
+   * outer code-block containers (highlight wrappers, language-* boxes)
+   * so that code titles/filenames stay LTR too.
    */
   function forEachCodeElement(root, fn) {
-    var codeSelector = CODE_LTR_TAGS.map(function (t) {
+    var codeTags = CODE_LTR_TAGS.map(function (t) {
       return t.toLowerCase();
     }).join(',');
-    root.querySelectorAll(codeSelector).forEach(fn);
+    // Inner code tags
+    root.querySelectorAll(codeTags).forEach(fn);
+    // Outer code-block containers (highlight wrappers, language-* boxes)
+    root
+      .querySelectorAll('.highlight, [class*="language-"], .snippet, .code-block, code-block')
+      .forEach(fn);
     // Descend into shadow roots recursively
     root.querySelectorAll('*').forEach(function (el) {
       if (el.shadowRoot) forEachCodeElement(el.shadowRoot, fn);
