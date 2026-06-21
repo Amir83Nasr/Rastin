@@ -71,19 +71,32 @@ if (chrome.contextMenus) {
       contexts: ['page'],
     });
 
+    chrome.contextMenus.create({
+      id: 'rtl-translate-selection',
+      title: 'ترجمه متن انتخاب شده',
+      contexts: ['selection'],
+    });
+
     chrome.contextMenus.onClicked.addListener(function (info, tab) {
       if (!tab || !tab.id) {
         log.warn(ERR.MSG_NO_TAB, 'Context menu clicked but no tab available');
         return;
       }
 
-      if (info.menuItemId === 'rtl-translate-page') {
-        tabMsg(tab.id, { action: 'apply_rtl' });
-        tabMsg(tab.id, { action: 'translate' });
-        log.info(null, 'Context menu: translate page');
-      } else if (info.menuItemId === 'rtl-toggle-rtl') {
-        tabMsg(tab.id, { action: 'toggle_rtl' });
-        log.info(null, 'Context menu: toggle RTL');
+      switch (info.menuItemId) {
+        case 'rtl-translate-page':
+          tabMsg(tab.id, { action: 'apply_rtl' });
+          tabMsg(tab.id, { action: 'translate' });
+          log.info(null, 'Context menu: translate page');
+          break;
+        case 'rtl-toggle-rtl':
+          tabMsg(tab.id, { action: 'toggle_rtl' });
+          log.info(null, 'Context menu: toggle RTL');
+          break;
+        case 'rtl-translate-selection':
+          tabMsg(tab.id, { action: 'translate_selection' });
+          log.info(null, 'Context menu: translate selection');
+          break;
       }
     });
   } catch (err) {

@@ -49,19 +49,25 @@
     });
   }
 
-  /** Debounced persist: batches rapid writes into one async save. */
-  var _cachePersistPending = false;
+  /** Debounced persist (2s debounce, or immediate if >50 entries). */
+  var _cachePersistTimer = null;
   function sessionPersistCache() {
-    if (_cachePersistPending) return;
-    _cachePersistPending = true;
-    Promise.resolve().then(function () {
-      _cachePersistPending = false;
-      if (!isExtensionValid()) return;
-      var data = {};
-      data[SESSION_CACHE_KEY] = transCache;
-      chrome.storage.session.set(data, function () {
-        /* best-effort */
-      });
+    if (_cachePersistTimer) clearTimeout(_cachePersistTimer);
+    var cacheSize = Object.keys(transCache).length;
+    if (cacheSize > 50) {
+      flushCacheToStorage();
+    } else {
+      _cachePersistTimer = setTimeout(flushCacheToStorage, 2000);
+    }
+  }
+
+  function flushCacheToStorage() {
+    _cachePersistTimer = null;
+    if (!isExtensionValid()) return;
+    var data = {};
+    data[SESSION_CACHE_KEY] = transCache;
+    chrome.storage.session.set(data, function () {
+      /* best-effort */
     });
   }
 
@@ -138,8 +144,6 @@
   const RETRY_DELAY_MS = 1000;
   const BATCH_SIZE = 30;
   const BATCH_CONCURRENCY = 5;
-  const FIRST_BATCH_SIZE = 7;
-  const SMALL_PAGE_THRESHOLD = 40;
 
   // ─── Code Detection (from module) ────────────────────
   var shouldTranslateNode = CodeDetection.createShouldTranslateNode(SKIP_TAGS, SKIP_PREFIXES);
@@ -147,6 +151,28 @@
   // ─── Rate-limit circuit breaker (429 streaks) ──────
   var _rateLimitStreak = 0;
   var RATE_LIMIT_CIRCUIT_MS = 3000;
+
+  // ─── Adaptive concurrency tracking ─────────────────
+  var _avgLatency = 0;
+  var _latencySamples = 0;
+  var ADAPTIVE_MIN_CONCURRENCY = 2;
+  var ADAPTIVE_MAX_CONCURRENCY = 10;
+
+  function getAdaptiveConcurrency() {
+    if (_latencySamples < 3) return BATCH_CONCURRENCY;
+    if (_avgLatency < 500) return ADAPTIVE_MAX_CONCURRENCY;
+    if (_avgLatency > 2000) return ADAPTIVE_MIN_CONCURRENCY;
+    var ratio = (2000 - _avgLatency) / 1500;
+    return Math.round(
+      ADAPTIVE_MIN_CONCURRENCY + ratio * (ADAPTIVE_MAX_CONCURRENCY - ADAPTIVE_MIN_CONCURRENCY),
+    );
+  }
+
+  function trackLatency(ms) {
+    if (ms > 10000) return;
+    _avgLatency = (_avgLatency * _latencySamples + ms) / (_latencySamples + 1);
+    _latencySamples++;
+  }
 
   // ─── Font Injection (Iran Yekan X + Cartograph CF) ──
   function injectFonts() {
@@ -277,28 +303,20 @@
       while ((node = walker.nextNode())) {
         nodes.push(node);
       }
-    }
 
-    // Phase 1: walk light DOM
-    walkTree(root);
-
-    // Phase 2: walk into open shadow roots
-    var elWalker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null, false);
-    var el;
-    while ((el = elWalker.nextNode())) {
-      if (el.shadowRoot && !seenShadows.has(el.shadowRoot)) {
-        seenShadows.add(el.shadowRoot);
-        walkTree(el.shadowRoot);
+      // Discover open shadow roots in the same pass
+      var elWalker = document.createTreeWalker(nodeRoot, NodeFilter.SHOW_ELEMENT, null, false);
+      var el;
+      while ((el = elWalker.nextNode())) {
+        if (el.shadowRoot && !seenShadows.has(el.shadowRoot)) {
+          seenShadows.add(el.shadowRoot);
+          walkTree(el.shadowRoot);
+        }
       }
     }
 
+    walkTree(root);
     return nodes;
-  }
-
-  function chunkArray(arr, size) {
-    var chunks = [];
-    for (var i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
-    return chunks;
   }
 
   /**
@@ -363,6 +381,7 @@
           return text;
         }
 
+        var apiStartTime = Date.now();
         var url =
           'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=' +
           encodeURIComponent(text);
@@ -390,6 +409,7 @@
 
         // Success — reset rate-limit streak
         _rateLimitStreak = 0;
+        trackLatency(Date.now() - apiStartTime);
 
         var data = await resp.json();
         if (data && data[0]) {
@@ -503,206 +523,9 @@
    * them via requestAnimationFrame (500 updates per frame).
    * @returns {number}  count of unique texts that changed
    */
-  function applyTranslationDOMUpdates(chunks, batchResults, textMap) {
-    var domUpdates = [];
-    var translated = 0;
-    var BATCH_DOM_PER_FRAME = 500;
+  // ─── (Streaming pipeline handles all DOM updates inline via rAF) ──
 
-    for (var ci = 0; ci < chunks.length; ci++) {
-      var chunk = chunks[ci];
-      var result = batchResults[ci] || chunk;
-      for (var ti = 0; ti < chunk.length; ti++) {
-        var original = chunk[ti];
-        var translation = result[ti];
-        if (translation && translation !== original) {
-          var nodes = textMap[original] || [];
-          for (var ni = 0; ni < nodes.length; ni++) {
-            (function (n, o, t) {
-              // Save original text for restoration (first time only)
-              if (!_originalTexts) _originalTexts = new Map();
-              if (!_originalTexts.has(n)) {
-                _originalTexts.set(n, n.textContent);
-              }
-              domUpdates.push(function () {
-                if (n.textContent === o) {
-                  n.textContent = t;
-                } else {
-                  n.textContent = n.textContent.replace(o, t);
-                }
-              });
-            })(nodes[ni], original, translation);
-          }
-          translated++;
-        }
-      }
-    }
-
-    if (domUpdates.length === 0) return translated;
-
-    // Apply closures in rAF batches (one frame per batch)
-    // Use a simple sequential loop since rAF callbacks are already async
-    var applyNext = function (start) {
-      return new Promise(function (resolve) {
-        if (start >= domUpdates.length) {
-          resolve();
-          return;
-        }
-        var end = Math.min(start + BATCH_DOM_PER_FRAME, domUpdates.length);
-        requestAnimationFrame(function () {
-          for (var i = start; i < end; i++) domUpdates[i]();
-          resolve(applyNext(end));
-        });
-      });
-    };
-
-    return applyNext(0).then(function () {
-      return translated;
-    });
-  }
-
-  // ─── Deferred Chunks via requestIdleCallback ──────────
-  /**
-   * Process deferred (off-screen) chunks one at a time via
-   * requestIdleCallback with a 3-second timeout fallback so
-   * visible content gets 100% of the API bandwidth first.
-   * Each chunk's DOM updates are applied via rAF before the
-   * next idle callback fires.
-   */
-  function scheduleDeferredChunks(chunks, textMap) {
-    var idx = 0;
-    var totalTranslated = 0;
-
-    function processNext() {
-      return new Promise(function (resolve) {
-        if (idx >= chunks.length) {
-          resolve();
-          return;
-        }
-
-        var chunkIdx = idx++;
-        requestIdleCallback(
-          function () {
-            // Translate all texts in this chunk with controlled concurrency
-            resolve(
-              translateAll(chunks[chunkIdx])
-                .then(function (results) {
-                  // Apply this chunk's DOM updates via rAF
-                  return applyTranslationDOMUpdates([chunks[chunkIdx]], [results], textMap);
-                })
-                .then(function (count) {
-                  totalTranslated += count;
-                  // Schedule the next chunk
-                  return processNext();
-                })
-                .catch(function (err) {
-                  log.warn(ERR.TRANS_API_FAILURE, 'Deferred chunk failed, skipping', {
-                    error: err.message,
-                  });
-                  return processNext();
-                }),
-            );
-          },
-          { timeout: 3000 },
-        );
-      });
-    }
-
-    return processNext().then(function () {
-      return totalTranslated;
-    });
-  }
-
-  // ─── SPA / Dynamic Content Observer (MutationObserver) ──
-  /**
-   * After translation, watch for dynamically added content (SPA
-   * navigation, infinite scroll, React/Vue/Angular renders) and
-   * translate new text automatically.
-   */
-  var _domObserver = null;
-  var _observerTimer = null;
-  var OBSERVER_DEBOUNCE_MS = 500;
-
-  function processDOMChanges() {
-    if (!STATE.translated || STATE.translating) return;
-
-    // Walk all text nodes below body, skipping already-translated ones
-    var newNodes = [];
-    var walker = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_TEXT,
-      {
-        acceptNode: function (node) {
-          if (!node.textContent || !node.textContent.trim()) return NodeFilter.FILTER_REJECT;
-          if (!shouldTranslateNode(node)) return NodeFilter.FILTER_REJECT;
-          if (!isMeaningfulText(node.textContent)) return NodeFilter.FILTER_REJECT;
-          // Skip nodes already saved for translation
-          if (_originalTexts && _originalTexts.has(node)) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
-        },
-      },
-      false,
-    );
-
-    var node;
-    while ((node = walker.nextNode())) {
-      newNodes.push(node);
-    }
-
-    if (newNodes.length === 0) return;
-
-    // Build textMap from new nodes only
-    var textMap = Object.create(null);
-    newNodes.forEach(function (n) {
-      var t = n.textContent.trim();
-      if (!textMap[t]) textMap[t] = [];
-      textMap[t].push(n);
-    });
-
-    var uniqueTexts = Object.keys(textMap);
-    log.info(null, 'DOM mutation: ' + uniqueTexts.length + ' new unique texts found');
-
-    // Translate new content using existing infrastructure
-    var chunks = chunkArray(uniqueTexts, BATCH_SIZE);
-    var deferredProcess = function (chunkIdx) {
-      if (chunkIdx >= chunks.length) return;
-      translateAll(chunks[chunkIdx])
-        .then(function (translated) {
-          applyTranslationDOMUpdates([chunks[chunkIdx]], [translated], textMap);
-          deferredProcess(chunkIdx + 1);
-        })
-        .catch(function (err) {
-          log.warn(ERR.TRANS_API_FAILURE, 'SPA mutation chunk failed, skipping', {
-            error: err.message,
-          });
-          deferredProcess(chunkIdx + 1);
-        });
-    };
-    deferredProcess(0);
-  }
-
-  function observeDOMChanges() {
-    stopDOMObserver();
-    try {
-      _domObserver = new MutationObserver(function () {
-        clearTimeout(_observerTimer);
-        _observerTimer = setTimeout(processDOMChanges, OBSERVER_DEBOUNCE_MS);
-      });
-      _domObserver.observe(document.body, { childList: true, subtree: true });
-    } catch (_) {
-      // Some pages (e.g. chrome://) block mutation observers
-    }
-  }
-
-  function stopDOMObserver() {
-    clearTimeout(_observerTimer);
-    _observerTimer = null;
-    if (_domObserver) {
-      try {
-        _domObserver.disconnect();
-      } catch (_) {}
-      _domObserver = null;
-    }
-  }
+  // ─── (No auto-MutationObserver — translation only on user command) ──
 
   // ─── Translate Page ─────────────────────────────────
 
@@ -716,11 +539,17 @@
       return false;
     }
 
-    // Disconnect observer during translation to avoid feedback loops
-    stopDOMObserver();
     STATE.translating = true;
 
     try {
+      // Short-circuit: no meaningful text on page
+      var bodyText = ((document.body && document.body.innerText) || '').trim();
+      if (bodyText.length < 10) {
+        log.info(ERR.TRANS_NO_TEXT, 'Page body has no meaningful text, skipping');
+        STATE.translating = false;
+        return false;
+      }
+
       var textNodes = collectTextNodes(document.body);
       if (textNodes.length === 0) {
         log.info(ERR.TRANS_NO_TEXT, 'No translatable text found on page');
@@ -730,15 +559,15 @@
 
       log.info(null, 'Found ' + textNodes.length + ' text nodes to translate');
 
-      // Deduplicate
-      var textMap = Object.create(null);
+      // Deduplicate with Map for O(1) access
+      var textMap = new Map();
       textNodes.forEach(function (node) {
         var t = node.textContent.trim();
-        if (!textMap[t]) textMap[t] = [];
-        textMap[t].push(node);
+        if (!textMap.has(t)) textMap.set(t, []);
+        textMap.get(t).push(node);
       });
 
-      var uniqueTexts = Object.keys(textMap);
+      var uniqueTexts = Array.from(textMap.keys());
 
       // Progressive rendering: sort visible texts first so the
       // worker pool processes them before off-screen content.
@@ -751,96 +580,91 @@
         });
       }
 
-      // ── Split into priority (visible) and deferred (off-screen) ──
-      var splitIdx = uniqueTexts.length;
-      if (visibleTexts && uniqueTexts.length >= SMALL_PAGE_THRESHOLD) {
-        for (var si = 0; si < uniqueTexts.length; si++) {
-          if (!visibleTexts[uniqueTexts[si]]) {
-            splitIdx = si;
-            break;
-          }
-        }
-      }
-      var priorityTexts = uniqueTexts.slice(0, splitIdx);
-      var deferredTexts = uniqueTexts.slice(splitIdx);
+      // ── Streaming pipeline: single shared queue + rAF DOM flush ──
+      var translatedCount = 0;
+      var concurrency = getAdaptiveConcurrency();
+      var DOM_BUDGET_MS = 8;
+      var domBatchSize = 100;
 
-      var deferredChunks = chunkArray(deferredTexts, BATCH_SIZE);
+      var workQueue = uniqueTexts.map(function (t) {
+        return t;
+      });
+      var domQueue = [];
+      var domScheduled = false;
+      var domFlushResolve = null;
 
       log.info(
         null,
-        'Translating ' +
-          priorityTexts.length +
-          ' priority + ' +
-          deferredTexts.length +
-          ' deferred texts across ' +
-          Object.keys(textMap).length +
-          ' unique texts',
+        'Translating ' + uniqueTexts.length + ' unique texts (concurrency: ' + concurrency + ')',
       );
 
-      // ── Phase 1: translate priority texts (controlled concurrency) ──
-      var translatedCount = 0;
-      var DOM_BATCH_SIZE = 15;
+      function scheduleDOMFlush() {
+        if (domScheduled) return;
+        domScheduled = true;
+        requestAnimationFrame(function () {
+          domScheduled = false;
+          var startTime = performance.now();
+          var batch = domQueue.splice(0, domBatchSize);
+          var count = 0;
 
-      if (priorityTexts.length > 0) {
-        var allPriorityResults = new Array(priorityTexts.length);
-        var textQueue = priorityTexts.map(function (t, i) {
-          return { text: t, idx: i };
-        });
-        var domPending = [];
-
-        async function transWorker() {
-          while (textQueue.length) {
-            var item = textQueue.shift();
-            allPriorityResults[item.idx] = await translateText(item.text);
-            transCache[item.text] = allPriorityResults[item.idx];
-
-            // Accumulate for incremental DOM update
-            domPending.push({
-              text: item.text,
-              translated: allPriorityResults[item.idx],
-            });
-
-            // Apply DOM when batch threshold reached or queue exhausted
-            if (domPending.length >= DOM_BATCH_SIZE || textQueue.length === 0) {
-              var batch = domPending.splice(0, DOM_BATCH_SIZE);
-              var bTexts = batch.map(function (b) {
-                return b.text;
-              });
-              var bResults = batch.map(function (b) {
-                return b.translated;
-              });
-              translatedCount += await applyTranslationDOMUpdates([bTexts], [bResults], textMap);
+          for (var di = 0; di < batch.length; di++) {
+            var dItem = batch[di];
+            var dNodes = textMap.get(dItem.original) || [];
+            for (var dni = 0; dni < dNodes.length; dni++) {
+              (function (n, o, t) {
+                if (!_originalTexts) _originalTexts = new Map();
+                if (!_originalTexts.has(n)) {
+                  _originalTexts.set(n, n.textContent);
+                }
+                n.textContent = n.textContent === o ? t : n.textContent.replace(o, t);
+              })(dNodes[dni], dItem.original, dItem.translated);
             }
+            count++;
+          }
+          translatedCount += count;
+
+          // Adjust batch size based on frame budget
+          var elapsed = performance.now() - startTime;
+          if (elapsed > DOM_BUDGET_MS && domBatchSize > 10) {
+            domBatchSize = Math.max(10, Math.floor(domBatchSize * 0.8));
+          } else if (elapsed < DOM_BUDGET_MS / 2 && domBatchSize < 1000) {
+            domBatchSize = Math.min(1000, Math.floor(domBatchSize * 1.2));
+          }
+
+          if (domQueue.length > 0) scheduleDOMFlush();
+          if (domFlushResolve && domQueue.length === 0 && workQueue.length === 0) {
+            domFlushResolve();
+            domFlushResolve = null;
+          }
+        });
+      }
+
+      async function streamWorker() {
+        while (workQueue.length > 0) {
+          var item = workQueue.shift();
+          var translated = await translateText(item);
+          if (translated !== item) {
+            domQueue.push({ original: item, translated: translated });
+            scheduleDOMFlush();
           }
         }
-
-        var poolSize = Math.min(BATCH_CONCURRENCY, priorityTexts.length);
-        var workers = [];
-        for (var w = 0; w < poolSize; w++) workers.push(transWorker());
-        await Promise.all(workers);
-
-        // Flush any remaining DOM updates
-        if (domPending.length > 0) {
-          var bTexts = domPending.map(function (b) {
-            return b.text;
-          });
-          var bResults = domPending.map(function (b) {
-            return b.translated;
-          });
-          translatedCount += await applyTranslationDOMUpdates([bTexts], [bResults], textMap);
-        }
-
-        sessionPersistCache();
       }
 
-      // ── Phase 2: deferred chunks via requestIdleCallback ──
-      if (deferredChunks.length > 0) {
-        var deferredCount = await scheduleDeferredChunks(deferredChunks, textMap);
-        translatedCount += deferredCount;
+      var poolSize = Math.min(concurrency, uniqueTexts.length);
+      var workers = [];
+      for (var w = 0; w < poolSize; w++) workers.push(streamWorker());
+      await Promise.all(workers);
+
+      // Wait for final DOM flush
+      if (domQueue.length > 0) {
+        await new Promise(function (resolve) {
+          domFlushResolve = resolve;
+        });
       }
+
+      sessionPersistCache();
 
       STATE.translated = translatedCount > 0;
-      if (STATE.translated) observeDOMChanges();
 
       if (translatedCount > 0) {
         log.info(null, 'Translated ' + translatedCount + ' unique texts across all chunks');
@@ -956,7 +780,6 @@
    * @returns {boolean}  true if any nodes were restored
    */
   function removeTranslation() {
-    stopDOMObserver();
     if (!_originalTexts || _originalTexts.size === 0) return false;
 
     var count = 0;
@@ -1092,6 +915,189 @@
     STATE.bannerShown = false;
   }
 
+  // ─── Select-to-Translate ───────────────────────────
+  var _selTooltip = null;
+
+  function escapeHtml(str) {
+    var d = document.createElement('div');
+    d.appendChild(document.createTextNode(str));
+    return d.innerHTML;
+  }
+
+  function createSelectionTooltip(rect) {
+    removeSelectionTooltip();
+
+    var tooltip = document.createElement('div');
+    tooltip.className = 'rastin-sel-tooltip';
+    tooltip.dir = 'rtl';
+    tooltip.innerHTML =
+      '<div class="rastin-sel-tooltip-body">' +
+      '<button class="rastin-sel-translate-btn">' +
+      ICON_SVG.globe +
+      ' ترجمه' +
+      '</button>' +
+      '</div>';
+
+    var top = rect.bottom + window.scrollY + 6;
+    var left = rect.left + window.scrollX;
+    tooltip.style.top = top + 'px';
+    tooltip.style.left = left + 'px';
+
+    // Edge-of-screen: right side
+    if (left + 120 > window.innerWidth - 10) {
+      tooltip.style.left = 'auto';
+      tooltip.style.right = '10px';
+    }
+
+    // Edge-of-screen: bottom (place above selection)
+    if (rect.bottom + 50 > window.innerHeight) {
+      tooltip.style.top = rect.top + window.scrollY - 10 + 'px';
+      tooltip.style.transform = 'translateY(-100%)';
+    }
+
+    document.body.appendChild(tooltip);
+    _selTooltip = tooltip;
+
+    tooltip.querySelector('.rastin-sel-translate-btn').addEventListener('click', function () {
+      handleSelectionTranslate();
+    });
+
+    return tooltip;
+  }
+
+  function removeSelectionTooltip() {
+    if (_selTooltip) {
+      _selTooltip.remove();
+      _selTooltip = null;
+    }
+  }
+
+  function getTranslatableSelection() {
+    var sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+
+    var text = sel.toString().trim();
+    if (!text || text.length < 2 || text.length > 5000) return null;
+
+    // Check code context
+    var range = sel.getRangeAt(0);
+    var startNode = range.startContainer;
+    if (!shouldTranslateNode(startNode)) return null;
+
+    // Check: not already Persian
+    var faCount = (text.match(/[؀-ۿ]/g) || []).length;
+    if (faCount / text.length > 0.3) return null;
+
+    // Skip pure numbers/punctuation
+    var t = text;
+    if (/^[\d\s.,!?;:()\-_\/\\"'«»‌]+$/.test(t)) return null;
+
+    return { text: text, range: range };
+  }
+
+  function onSelectionMouseUp(e) {
+    if (_selTooltip && _selTooltip.contains(e.target)) return;
+
+    setTimeout(function () {
+      var selData = getTranslatableSelection();
+      if (!selData) {
+        removeSelectionTooltip();
+        return;
+      }
+
+      var rect = selData.range.getBoundingClientRect();
+      if (!rect || rect.width === 0) {
+        removeSelectionTooltip();
+        return;
+      }
+
+      createSelectionTooltip(rect);
+    }, 10);
+  }
+
+  /**
+   * Async: translate selected text and show result in tooltip.
+   * Exposed globally so background.js can trigger it via message.
+   * @returns {Promise<string|null>}  translated text or null
+   */
+  async function handleSelectionTranslate() {
+    var sel = window.getSelection();
+    if (!sel || sel.isCollapsed) {
+      removeSelectionTooltip();
+      return null;
+    }
+
+    var text = sel.toString().trim();
+    if (!text) {
+      removeSelectionTooltip();
+      return null;
+    }
+
+    // Show loading
+    if (_selTooltip) {
+      var body = _selTooltip.querySelector('.rastin-sel-tooltip-body');
+      if (body) {
+        body.innerHTML =
+          '<span class="rastin-sel-loading">' + ICON_SVG.loader + '  در حال ترجمه...</span>';
+      }
+    }
+
+    try {
+      var translated = await translateText(text);
+
+      if (!_selTooltip) return null; // dismissed mid-translate
+
+      // Show result in tooltip
+      var resultBody = _selTooltip.querySelector('.rastin-sel-tooltip-body');
+      if (resultBody) {
+        resultBody.innerHTML =
+          '<div class="rastin-sel-result">' +
+          '<div class="rastin-sel-translated-text">' +
+          escapeHtml(translated) +
+          '</div>' +
+          '<div class="rastin-sel-original-text">' +
+          escapeHtml(text) +
+          '</div>' +
+          '</div>' +
+          '<button class="rastin-sel-close-btn">' +
+          ICON_SVG.close +
+          '</button>';
+      }
+
+      var closeBtn = _selTooltip.querySelector('.rastin-sel-close-btn');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          removeSelectionTooltip();
+        });
+      }
+
+      sessionPersistCache();
+      return translated;
+    } catch (err) {
+      log.warn(ERR.TRANS_API_FAILURE, 'Selection translation failed', { error: err.message });
+      if (_selTooltip) {
+        var errBody = _selTooltip.querySelector('.rastin-sel-tooltip-body');
+        if (errBody) {
+          errBody.innerHTML = '<span class="rastin-sel-error">ترجمه ناموفق. مجدد تلاش کنید.</span>';
+        }
+      }
+      return null;
+    }
+  }
+
+  // ─── Global event listeners for select-to-translate ────
+  document.addEventListener('mouseup', onSelectionMouseUp);
+  window.addEventListener('scroll', removeSelectionTooltip, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') removeSelectionTooltip();
+  });
+  document.addEventListener('mousedown', function (e) {
+    if (_selTooltip && !_selTooltip.contains(e.target)) {
+      removeSelectionTooltip();
+    }
+  });
+
   // ─── Persistence ─────────────────────────────────────
   function saveState(activated) {
     try {
@@ -1193,6 +1199,12 @@
           hideBanner();
           sendResponse({ success: true });
           break;
+
+        case 'translate_selection':
+          handleSelectionTranslate().then(function (result) {
+            sendResponse({ success: result !== null });
+          });
+          return true; // async
       }
     } catch (err) {
       log.error(ERR.UNKNOWN, 'Message handler error', {
@@ -1209,8 +1221,14 @@
 
   // ─── Init ────────────────────────────────────────────
   async function init() {
-    injectFonts();
-    await sessionLoadCache();
+    // Load fonts and translation cache in parallel
+    await Promise.all([
+      new Promise(function (resolve) {
+        injectFonts();
+        resolve();
+      }),
+      sessionLoadCache(),
+    ]);
 
     if (isPersianPage()) {
       STATE.langDetected = 'فارسی';
@@ -1229,19 +1247,11 @@
       'Page language detected: ' + STATE.langDetected + ' (' + (STATE.langCode || '?') + ')',
     );
 
-    // Restore previous state for this domain
+    // Restore previous RTL state for this domain (no auto-translate)
     var saved = loadState();
     if (saved && saved.active) {
       applyRTL();
       log.info(null, 'Restored previous RTL state for domain');
-      if (saved.translated) {
-        translatePage().then(function (ok) {
-          if (ok) {
-            ensurePersistedFont();
-            log.info(null, 'Restored translation for domain');
-          }
-        });
-      }
       return;
     }
 
