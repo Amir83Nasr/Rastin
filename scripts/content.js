@@ -735,6 +735,15 @@
       }
     }
 
+    // YouTube: on watch pages, scope to #primary (player + title + description + comments)
+    if (host === 'www.youtube.com' && window.location.pathname.startsWith('/watch')) {
+      var primary = document.querySelector('#primary');
+      if (primary) {
+        log.info(null, 'YouTube watch page detected — scoping translation to primary content');
+        return primary;
+      }
+    }
+
     // All other sites: translate the whole page
     return document.body;
   }
