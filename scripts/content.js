@@ -26,8 +26,10 @@
   // all tabs of this extension — no manual expiry needed).
   var transCache = Object.create(null);
   var SESSION_CACHE_KEY = 'rtl_trans_cache';
+  var LOCAL_CACHE_KEY = 'rtl_trans_cache_v2';
+  var MAX_CACHE_ENTRIES = 1000;
 
-  /** Load cache from chrome.storage.session into transCache. */
+  /** Load cache from chrome.storage.session, falling back to localStorage. */
   function sessionLoadCache() {
     return new Promise(function (resolve) {
       if (!isExtensionValid()) {
@@ -39,14 +41,56 @@
           var stored = result[SESSION_CACHE_KEY];
           if (stored) {
             transCache = stored;
-            log.info(null, 'Loaded ' + Object.keys(transCache).length + ' cached translations');
+            log.info(
+              null,
+              'Loaded ' + Object.keys(transCache).length + ' cached translations (session)',
+            );
           }
         } catch (_) {
           /* best-effort */
         }
+
+        // Fall back to localStorage if session storage was empty
+        if (Object.keys(transCache).length === 0) {
+          try {
+            var local = localStorage.getItem(LOCAL_CACHE_KEY);
+            if (local) {
+              var parsed = JSON.parse(local);
+              if (parsed && typeof parsed === 'object') {
+                transCache = parsed;
+                log.info(
+                  null,
+                  'Loaded ' +
+                    Object.keys(transCache).length +
+                    ' cached translations (localStorage)',
+                );
+              }
+            }
+          } catch (_) {
+            /* best-effort */
+          }
+        }
+
         resolve();
       });
     });
+  }
+
+  /**
+   * Trim the in-memory cache if it exceeds MAX_CACHE_ENTRIES.
+   * Keeps the most-recently-added entries (insertion order on string keys).
+   */
+  function trimCache() {
+    var keys = Object.keys(transCache);
+    if (keys.length > MAX_CACHE_ENTRIES) {
+      var trimmed = Object.create(null);
+      var start = keys.length - Math.floor(MAX_CACHE_ENTRIES / 2);
+      for (var ki = start; ki < keys.length; ki++) {
+        trimmed[keys[ki]] = transCache[keys[ki]];
+      }
+      transCache = trimmed;
+      log.info(null, 'Trimmed cache to ' + Math.floor(MAX_CACHE_ENTRIES / 2) + ' entries');
+    }
   }
 
   /** Debounced persist (2s debounce, or immediate if >50 entries). */
@@ -64,11 +108,21 @@
   function flushCacheToStorage() {
     _cachePersistTimer = null;
     if (!isExtensionValid()) return;
+
+    // 1. Persist to chrome.storage.session (shared across tabs)
     var data = {};
     data[SESSION_CACHE_KEY] = transCache;
     chrome.storage.session.set(data, function () {
       /* best-effort */
     });
+
+    // 2. Persist to localStorage (cross-session — survives browser restart)
+    try {
+      trimCache();
+      localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(transCache));
+    } catch (_) {
+      /* localStorage may be full — silently ignore */
+    }
   }
 
   // ─── State ───────────────────────────────────────────
@@ -220,6 +274,21 @@
         error: err.message,
       });
     }
+  }
+
+  // ─── Connection Warm-up ─────────────────────────────
+  /**
+   * Send a tiny warm-up request to the Google Translate API so the
+   * TCP+TLS handshake completes before the first real translation
+   * request.  Best-effort — failures are silently ignored.
+   */
+  function warmupConnection() {
+    if (!isExtensionValid()) return;
+    fetch('https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=.', {
+      keepalive: true,
+    }).catch(function () {
+      /* best-effort — failure is harmless */
+    });
   }
 
   // ─── Language Detection ──────────────────────────────
@@ -385,7 +454,7 @@
         var url =
           'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=' +
           encodeURIComponent(text);
-        var resp = await fetch(url);
+        var resp = await fetch(url, { keepalive: true });
 
         if (!resp.ok) {
           if (resp.status === 429) {
@@ -467,53 +536,169 @@
   }
 
   /**
-   * Translate a batch of texts, with individual caching.
-   * Only texts NOT in cache are sent to the API.
+   * Translate multiple texts in a single API call using the `|||` separator.
+   * ~95% fewer HTTP requests compared to one-at-a-time translation.
+   *
+   * Checks cache for each text individually; only uncached texts are sent.
+   * On batch-split mismatch (API returns wrong count), falls back to
+   * individual translateText() calls for that batch.
+   *
+   * @param {string[]} texts  Array of original texts (up to BATCH_SIZE)
+   * @returns {Promise<string[]>}  Translated texts in the same order
    */
-  /**
-   * Translate an array of texts with controlled concurrency.
-   * Returns translated texts in the same order as input.
-   * Handles caching internally (checks cache first, persists results).
-   */
-  async function translateAll(texts) {
+  async function translateBatch(texts) {
+    if (!texts || texts.length === 0) return [];
+    if (texts.length === 1) return [await translateText(texts[0])];
+
+    // Phase 1: separate cache hits from uncached
     var results = new Array(texts.length);
     var uncached = [];
     var uncachedIdx = [];
 
-    // Phase 1: collect cache hits & build uncached list
-    for (var i = 0; i < texts.length; i++) {
-      if (transCache[texts[i]]) {
-        results[i] = transCache[texts[i]];
+    for (var ti = 0; ti < texts.length; ti++) {
+      if (transCache[texts[ti]]) {
+        results[ti] = transCache[texts[ti]];
       } else {
-        uncached.push(texts[i]);
-        uncachedIdx.push(i);
+        uncached.push(texts[ti]);
+        uncachedIdx.push(ti);
       }
     }
 
-    // All cache hits — no API call needed
     if (uncached.length === 0) return results;
+    if (uncached.length === 1) {
+      results[uncachedIdx[0]] = await translateText(uncached[0]);
+      return results;
+    }
 
-    // Phase 2: translate uncached texts with controlled concurrency
-    var queue = uncached.map(function (text, pos) {
-      return { text: text, resultPos: pos };
-    });
+    // Phase 2: batch-translate uncached texts
+    var lastError = null;
 
-    async function worker() {
-      while (queue.length) {
-        var item = queue.shift();
-        var translated = await translateText(item.text);
-        var resIdx = uncachedIdx[item.resultPos];
-        results[resIdx] = translated;
-        transCache[item.text] = translated;
+    for (var attempt = 1; attempt <= MAX_TRANS_RETRIES; attempt++) {
+      try {
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          log.warn(ERR.NETWORK_OFFLINE, 'Browser reports offline, batch skipped');
+          // Fall back to individual (will return originals after retries)
+          for (var ui = 0; ui < uncached.length; ui++) {
+            results[uncachedIdx[ui]] = await translateText(uncached[ui]);
+          }
+          return results;
+        }
+
+        var apiStartTime = Date.now();
+        // Join uncached texts with ||| separator — the Google Translate API
+        // supports batched queries this way.  Each text is individually
+        // encoded so the ||| delimiter stays un-encoded.
+        var encodedParts = uncached.map(function (t) {
+          return encodeURIComponent(t);
+        });
+        var qParam = encodedParts.join('|||');
+        var url =
+          'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=' +
+          qParam;
+        var resp = await fetch(url, { keepalive: true });
+
+        if (!resp.ok) {
+          if (resp.status === 429) {
+            _rateLimitStreak++;
+            log.warn(ERR.TRANS_RATE_LIMIT, 'Rate limited on batch translate', {
+              status: 429,
+              attempt: attempt,
+              streak: _rateLimitStreak,
+            });
+            var circuitDelay = _rateLimitStreak >= 3 ? RATE_LIMIT_CIRCUIT_MS : 0;
+            if (attempt < MAX_TRANS_RETRIES) {
+              await new Promise(function (r) {
+                return setTimeout(r, RETRY_DELAY_MS * attempt * 2 + circuitDelay);
+              });
+            }
+            continue;
+          }
+          throw new Error('HTTP ' + resp.status);
+        }
+
+        // Success — reset rate-limit streak
+        _rateLimitStreak = 0;
+        trackLatency(Date.now() - apiStartTime);
+
+        var data = await resp.json();
+        if (data && data[0]) {
+          // data[0] is an array of [translation, original, ...] tuples
+          var batchResults = data[0].map(function (s) {
+            return s[0];
+          });
+
+          // Check for split mismatch — API may return wrong count
+          if (batchResults.length !== uncached.length) {
+            log.warn(
+              ERR.TRANS_EMPTY_RESULT,
+              'Batch split mismatch: expected ' +
+                uncached.length +
+                ', got ' +
+                batchResults.length +
+                ' — falling back to individual translation',
+            );
+            for (var fallbackIdx = 0; fallbackIdx < uncached.length; fallbackIdx++) {
+              results[uncachedIdx[fallbackIdx]] = await translateText(uncached[fallbackIdx]);
+            }
+            return results;
+          }
+
+          // Merge batch results with cache
+          for (var ri = 0; ri < uncached.length; ri++) {
+            var translated = batchResults[ri];
+            transCache[uncached[ri]] = translated;
+            results[uncachedIdx[ri]] = translated;
+          }
+
+          // Extract detected source language from API response (data[2])
+          if (data[2] && data[2] !== STATE.langCode) {
+            STATE.langCode = data[2];
+            STATE.langDetected = LANG_NAMES[data[2]] || data[2].toUpperCase();
+            log.info(null, 'Source language detected: ' + STATE.langDetected);
+          }
+
+          return results;
+        }
+
+        log.warn(ERR.TRANS_EMPTY_RESULT, 'Batch translation returned empty result', {
+          batchSize: uncached.length,
+        });
+        // Fall back to individual calls
+        for (var emptyIdx = 0; emptyIdx < uncached.length; emptyIdx++) {
+          results[uncachedIdx[emptyIdx]] = await translateText(uncached[emptyIdx]);
+        }
+        return results;
+      } catch (err) {
+        lastError = err;
+        if (attempt < MAX_TRANS_RETRIES) {
+          var delay = RETRY_DELAY_MS * attempt;
+          log.warn(
+            ERR.TRANS_API_FAILURE,
+            'Batch translation attempt ' + attempt + ' failed, retrying...',
+            {
+              batchSize: uncached.length,
+              delay: delay,
+              error: err.message,
+            },
+          );
+          await new Promise(function (r) {
+            return setTimeout(r, delay);
+          });
+        }
       }
     }
 
-    var pool = Math.min(BATCH_CONCURRENCY, queue.length);
-    var workers = [];
-    for (var w = 0; w < pool; w++) workers.push(worker());
-    await Promise.all(workers);
-
-    sessionPersistCache();
+    // All retries exhausted — fall back to individual calls
+    log.warn(
+      ERR.TRANS_API_FAILURE,
+      'Batch translation failed after ' +
+        MAX_TRANS_RETRIES +
+        ' attempts, falling back to individual',
+      { batchSize: uncached.length, error: lastError ? lastError.message : 'Unknown' },
+    );
+    for (var exIdx = 0; exIdx < uncached.length; exIdx++) {
+      results[uncachedIdx[exIdx]] = await translateText(uncached[exIdx]);
+    }
     return results;
   }
 
@@ -641,11 +826,36 @@
 
       async function streamWorker() {
         while (workQueue.length > 0) {
-          var item = workQueue.shift();
-          var translated = await translateText(item);
-          if (translated !== item) {
-            domQueue.push({ original: item, translated: translated });
-            scheduleDOMFlush();
+          // Pull a batch of texts (up to BATCH_SIZE) for a single API call
+          var chunk = workQueue.splice(0, BATCH_SIZE);
+          if (chunk.length === 0) break;
+
+          var translatedBatch = await translateBatch(chunk);
+
+          for (var bi = 0; bi < chunk.length; bi++) {
+            var item = chunk[bi];
+            var translated = translatedBatch[bi];
+            if (translated !== item) {
+              // Visible content: update DOM immediately — no rAF wait
+              // so the user sees translated text as fast as the API responds.
+              if (visibleTexts && visibleTexts[item]) {
+                var visNodes = textMap.get(item) || [];
+                for (var vi = 0; vi < visNodes.length; vi++) {
+                  (function (n, o, t) {
+                    if (!_originalTexts) _originalTexts = new Map();
+                    if (!_originalTexts.has(n)) {
+                      _originalTexts.set(n, n.textContent);
+                    }
+                    n.textContent = n.textContent === o ? t : n.textContent.replace(o, t);
+                  })(visNodes[vi], item, translated);
+                }
+                translatedCount++;
+              } else {
+                // Off-screen content: queue for rAF-batched flush
+                domQueue.push({ original: item, translated: translated });
+                scheduleDOMFlush();
+              }
+            }
           }
         }
       }
@@ -668,6 +878,9 @@
 
       if (translatedCount > 0) {
         log.info(null, 'Translated ' + translatedCount + ' unique texts across all chunks');
+        // Close the banner after successful translation — whether triggered
+        // from the banner itself, the popup, or a keyboard shortcut.
+        hideBanner();
       } else {
         log.info(null, 'No new translations applied (all texts were already Persian)');
       }
@@ -838,16 +1051,13 @@
       .addEventListener('click', async function () {
         applyRTL();
 
-        // Show loading state
-        banner.querySelector('.rtl-translator-banner-text').innerHTML =
-          ICON_SVG.loader + ' در حال ترجمه...';
-        var btns = banner.querySelectorAll('button');
-        for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+        // Close banner immediately so the user sees the page right away.
+        // Translation runs in the background.
+        hideBanner(banner);
 
         var ok = await translatePage();
 
         if (ok) {
-          hideBanner(banner);
           saveState(true);
           ensurePersistedFont();
           log.notify('صفحه با موفقیت به فارسی ترجمه شد', 'success');
@@ -1237,6 +1447,10 @@
       log.info(null, 'Persian page detected — RTL auto-applied');
       return;
     }
+
+    // Warm up the TCP+TLS connection to Google Translate so the
+    // first API call has near-zero connection-setup latency.
+    warmupConnection();
 
     STATE.langCode = getPageLanguage();
     STATE.langDetected =

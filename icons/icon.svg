@@ -1,12 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_2" data-name="Layer 2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
     <style>
-      .bg { fill: #2a2a2a; }
-      .shape { fill: #f3f4ed; }
+      .cls-1 {
+        fill: #f3f4ed;
+      }
     </style>
   </defs>
-  <rect class="bg" x="0" y="0" width="128" height="128" rx="24" ry="24"/>
-  <g transform="scale(0.18) translate(20, 22)">
-    <polygon class="shape" points="608.04 0 608.04 257.09 363.19 257.09 608.04 355.03 608.04 608.04 357.07 608.04 253.01 363.19 253.01 612.12 0 606 0 204.04 244.85 102.02 0 102.02 0 6.12 6.12 0 608.04 0"/>
+  <g id="Layer_1-2" data-name="Layer 1">
+    <polygon class="cls-1" points="0 0 1024 0 1024 429.61 607.57 430.08 1024 596.42 1024 1024 599.33 1024 422.54 607.57 423.25 1024 0 1024 0 341.33 409.6 170.67 0 170.67 0 0"/>
   </g>
 </svg>
