@@ -1,80 +1,107 @@
-<!DOCTYPE html>
+<!doctype html>
 <html dir="rtl" lang="fa">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RTL Translator</title>
-  <link rel="stylesheet" href="../styles/popup.css" />
-</head>
-<body>
-  <div id="app" class="container">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>راستین — Rastin</title>
+    <link rel="stylesheet" href="../styles/popup.css" />
+  </head>
+  <body>
+    <div id="app" class="container">
+      <!-- ═══ Header ═══ -->
+      <header class="header">
+        <img class="header-icon" src="../icons/icon.svg" alt="راستین" width="32" height="32" />
+        <div class="header-text">
+          <h1 class="title">راستین</h1>
+          <span class="subtitle">Rastin</span>
+        </div>
+      </header>
 
-    <!-- ═══ Header ═══ -->
-    <header class="header">
-      <img class="header-icon"
-           src="../icons/icon.svg"
-           alt="RTL Translator"
-           width="32" height="32" />
-      <div class="header-text">
-        <h1 class="title">مترجم فارسی</h1>
-        <span class="subtitle">RTL Translator</span>
-      </div>
-    </header>
+      <!-- ═══ Error Bar ═══ -->
+      <div id="errorBar" class="error-bar" role="alert" aria-live="polite"></div>
 
-    <!-- ═══ Status ═══ -->
-    <section class="status-section">
-      <div class="status-row">
-        <span class="label">وضعیت صفحه:</span>
-        <span id="pageStatus" class="value">در حال بررسی…</span>
-      </div>
-      <div class="status-row">
-        <span class="label">زبان تشخیص داده شده:</span>
-        <span id="detectedLang" class="value">—</span>
-      </div>
-    </section>
+      <!-- ═══ Status ═══ -->
+      <section class="status-section">
+        <div class="status-row">
+          <span class="label">وضعیت صفحه:</span>
+          <span id="pageStatus" class="value">در حال بررسی…</span>
+        </div>
+        <div class="status-row">
+          <span class="label">زبان تشخیص داده شده:</span>
+          <span id="detectedLang" class="value">—</span>
+        </div>
+      </section>
 
-    <!-- ═══ Controls ═══ -->
-    <section class="controls">
+      <!-- ═══ Controls ═══ -->
+      <section class="controls">
+        <!-- RTL toggle -->
+        <label class="toggle-row">
+          <span class="toggle-label">
+            <i class="lci" data-icon="arrow-left-right" data-size="18"></i>
+            راست‌چین (RTL)
+          </span>
+          <input type="checkbox" id="rtlToggle" />
+          <span class="toggle-slider"></span>
+        </label>
 
-      <!-- RTL toggle -->
-      <label class="toggle-row">
-        <span class="toggle-label">
-          <span class="icon">↔</span>
-          راست‌چین (RTL)
+        <!-- Translate button -->
+        <button id="translateBtn" class="btn btn-primary">
+          <i class="lci" data-icon="globe" data-size="18"></i>
+          ترجمه صفحه به فارسی
+        </button>
+
+        <!-- Auto-banner setting -->
+        <label class="toggle-row secondary">
+          <span class="toggle-label">
+            <i class="lci" data-icon="zap" data-size="16"></i>
+            نمایش خودکار بنر ترجمه
+          </span>
+          <input type="checkbox" id="autoBannerToggle" checked />
+          <span class="toggle-slider"></span>
+        </label>
+
+        <!-- Reset -->
+        <button id="resetBtn" class="btn btn-secondary">
+          <i class="lci" data-icon="rotate-ccw" data-size="16"></i>
+          بازگردانی به حالت اولیه
+        </button>
+      </section>
+
+      <!-- ═══ Footer ═══ -->
+      <footer class="footer">
+        <span class="footer-contact">
+          <span class="footer-label">ارتباط با توسعه‌دهنده</span>
+          <a
+            class="footer-bale"
+            href="https://ble.ir/Amir83Nasr"
+            target="_blank"
+            rel="noopener"
+            title="ارتباط در پیام‌رسان بله"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              width="14"
+              height="14"
+              class="footer-bale-icon"
+            >
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              <path d="M8 10h.01" />
+              <path d="M12 10h.01" />
+              <path d="M16 10h.01" />
+            </svg>
+            امیرحسین نصراللهی
+          </a>
         </span>
-        <input type="checkbox" id="rtlToggle" />
-        <span class="toggle-slider"></span>
-      </label>
+      </footer>
+    </div>
 
-      <!-- Translate button -->
-      <button id="translateBtn" class="btn btn-primary">
-        <span class="icon">🌐</span>
-        ترجمه صفحه به فارسی
-      </button>
-
-      <!-- Auto-banner setting -->
-      <label class="toggle-row secondary">
-        <span class="toggle-label">
-          <span class="icon">⚡</span>
-          نمایش خودکار بنر ترجمه
-        </span>
-        <input type="checkbox" id="autoBannerToggle" checked />
-        <span class="toggle-slider"></span>
-      </label>
-
-      <!-- Reset -->
-      <button id="resetBtn" class="btn btn-secondary">
-        <span class="icon">🔄</span>
-        بازگردانی به حالت اولیه
-      </button>
-    </section>
-
-    <!-- ═══ Footer ═══ -->
-    <footer class="footer">
-      قدرت گرفته از <strong>Iran Yekan X</strong>
-    </footer>
-  </div>
-
-  <script src="../scripts/popup.js"></script>
-</body>
+    <script src="../lib/errors.js"></script>
+    <script src="../lib/icons.js"></script>
+    <script src="../scripts/popup.js"></script>
+  </body>
 </html>

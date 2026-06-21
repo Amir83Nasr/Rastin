@@ -1,16 +1,12 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg id="Layer_2" data-name="Layer 2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1080">
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
   <defs>
     <style>
-      .cls-1 {
-        fill: #f3f4ed;
-      }
+      .bg { fill: #2a2a2a; }
+      .shape { fill: #f3f4ed; }
     </style>
   </defs>
-  <g id="Layer_1-2" data-name="Layer 1">
-    <g>
-      <rect class="cls-1" width="1080" height="1080"/>
-      <polygon points="844.02 233.94 844.02 491.03 599.17 491.03 844.02 588.97 844.02 841.98 593.05 841.98 488.99 597.13 488.99 846.06 235.98 839.94 235.98 437.98 480.83 335.96 235.98 335.96 235.98 240.06 242.1 233.94 844.02 233.94"/>
-    </g>
+  <rect class="bg" x="0" y="0" width="128" height="128" rx="24" ry="24"/>
+  <g transform="scale(0.18) translate(20, 22)">
+    <polygon class="shape" points="608.04 0 608.04 257.09 363.19 257.09 608.04 355.03 608.04 608.04 357.07 608.04 253.01 363.19 253.01 612.12 0 606 0 204.04 244.85 102.02 0 102.02 0 6.12 6.12 0 608.04 0"/>
   </g>
 </svg>

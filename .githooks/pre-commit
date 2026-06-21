@@ -1,0 +1,38 @@
+#!/bin/sh
+# ── Pre-commit hook: auto-format staged files with Prettier ──────
+
+# Resolve Prettier — prefer globally installed, fall back to npx
+PRETTIER=""
+if command -v prettier >/dev/null 2>&1; then
+  PRETTIER="prettier"
+elif npx --yes prettier --version >/dev/null 2>&1; then
+  PRETTIER="npx --yes prettier"
+else
+  echo "⚠️  Prettier not found. Install with:  npm install -g prettier"
+  exit 0
+fi
+
+# File extensions Prettier handles
+EXTENSIONS='\.(js|css|html|json|md)$'
+
+# Collect staged files (added, copied, modified, renamed)
+STAGED="$(git diff --cached --name-only --diff-filter=ACMR | grep -E "$EXTENSIONS" || true)"
+[ -z "$STAGED" ] && exit 0
+
+SAFE_FILES="$(printf '%s\n' "$STAGED" | tr '\n' ' ')"
+
+# First-pass check — if all clean, exit fast
+if $PRETTIER --check $SAFE_FILES >/dev/null 2>&1; then
+  exit 0
+fi
+
+# Files need formatting — write changes & re-stage
+echo '🎨  Prettier: formatting staged files…'
+echo "$STAGED" | tr '\n' '\0' | xargs -0 $PRETTIER --write --no-color 2>/dev/null
+echo "$STAGED" | tr '\n' '\0' | xargs -0 git add
+
+# Print per-file confirmation
+echo "✔  Formatted & re-staged:"
+echo "$STAGED" | while IFS= read -r f; do
+  echo "   •  $f"
+done

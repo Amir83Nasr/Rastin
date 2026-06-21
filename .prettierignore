@@ -1,0 +1,28 @@
+# ── Dirs ─────────────────────────────────────
+.git/
+.gitignore
+.prettierrc.json
+.prettierignore
+.githooks/
+
+# ── Assets ───────────────────────────────────
+fonts/*
+icons/*.png
+icons/*.svg
+
+# ── Node ─────────────────────────────────────
+node_modules/
+package.json
+package-lock.json
+
+# ── Locales (JSON keys matter) ──────────────
+_locales/
+
+# ── Build artifacts ─────────────────────────
+*.crx
+*.pem
+*.zip
+*.xpi
+dist/
+build/
+*.log

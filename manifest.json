@@ -1,27 +1,21 @@
 {
   "manifest_version": 3,
   "name": "__MSG_appName__",
-  "short_name": "RTL Translator",
-  "version": "1.0.0",
+  "short_name": "Rastin",
+  "version": "1.3.0",
   "description": "__MSG_appDesc__",
   "default_locale": "en",
 
-  "permissions": [
-    "storage",
-    "activeTab",
-    "contextMenus"
-  ],
-  "host_permissions": [
-    "https://translate.googleapis.com/*"
-  ],
+  "permissions": ["storage", "activeTab", "contextMenus"],
+  "host_permissions": ["https://translate.googleapis.com/*"],
 
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "__MSG_actionTitle__",
     "default_icon": {
-      "16": "icons/icon.svg",
-      "48": "icons/icon.svg",
-      "128": "icons/icon.svg"
+      "16": "icons/icon.png",
+      "48": "icons/icon.png",
+      "128": "icons/icon.png"
     }
   },
 
@@ -35,15 +29,12 @@
   ],
 
   "background": {
-    "service_worker": "scripts/background.js",
-    "type": "module"
+    "service_worker": "scripts/background.js"
   },
 
   "web_accessible_resources": [
     {
-      "resources": [
-        "fonts/*.ttf"
-      ],
+      "resources": ["fonts/*.ttf"],
       "matches": ["<all_urls>"]
     }
   ],
@@ -73,8 +64,8 @@
   },
 
   "icons": {
-    "16": "icons/icon.svg",
-    "48": "icons/icon.svg",
-    "128": "icons/icon.svg"
+    "16": "icons/icon.png",
+    "48": "icons/icon.png",
+    "128": "icons/icon.png"
   }
 }

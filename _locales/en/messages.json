@@ -1,14 +1,14 @@
 {
   "appName": {
-    "message": "RTL Translator",
+    "message": "Rastin — Farsi Translator & RTL",
     "description": "Extension name"
   },
   "appDesc": {
-    "message": "Auto-translate non-Persian web pages to Farsi with RTL support and Iran Yekan X font.",
+    "message": "Translate any page to Persian with RTL support and Iran Yekan X font.",
     "description": "Extension description"
   },
   "actionTitle": {
-    "message": "Translate page to Persian",
+    "message": "Rastin — ترجمه صفحه به فارسی",
     "description": "Tooltip for toolbar icon"
   },
   "cmdOpenPopup": {
