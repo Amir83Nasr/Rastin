@@ -193,12 +193,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
   resetBtn.addEventListener('click', function () {
     hideError();
-    sendToContent('remove_rtl')
+    sendToContent('reset_all')
       .then(function () {
-        return getCurrentTab();
-      })
-      .then(function (tab) {
-        if (tab && tab.id) chrome.tabs.reload(tab.id);
+        refreshStatus();
         window.close();
       })
       .catch(function (err) {

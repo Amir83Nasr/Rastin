@@ -59,6 +59,11 @@
     langCode: null,
   };
 
+  // ─── Original Text Store ──────────────────────────────
+  // Maps TextNode → its pre-translation textContent so we can
+  // restore the page without a full reload.
+  var _originalTexts = null; // lazy-allocated on first translate
+
   // ─── Constants ───────────────────────────────────────
   const PERSIAN_LANG_CODES = ['fa', 'per', 'fas'];
 
@@ -551,6 +556,11 @@
             var nodes = textMap[original] || [];
             for (var ni = 0; ni < nodes.length; ni++) {
               (function (n, o, t) {
+                // Save original text for restoration (first time only)
+                if (!_originalTexts) _originalTexts = new Map();
+                if (!_originalTexts.has(n)) {
+                  _originalTexts.set(n, n.textContent);
+                }
                 domUpdates.push(function () {
                   if (n.textContent === o) {
                     n.textContent = t;
@@ -655,6 +665,41 @@
 
   function isRTLActive() {
     return document.documentElement.classList.contains('rtl-translator-active');
+  }
+
+  // ─── Remove Translation (no page reload) ────────────
+  /**
+   * Restore all text nodes to their original pre-translation text.
+   * Uses _originalTexts Map — no API calls, no DOM walk, instant.
+   * @returns {boolean}  true if any nodes were restored
+   */
+  function removeTranslation() {
+    if (!_originalTexts || _originalTexts.size === 0) return false;
+
+    var count = 0;
+    _originalTexts.forEach(function (original, node) {
+      try {
+        node.textContent = original;
+        count++;
+      } catch (_) {
+        // detached node — skip silently
+      }
+    });
+    _originalTexts.clear();
+    STATE.translated = false;
+    log.info(null, 'Restored ' + count + ' text nodes to original language');
+    return count > 0;
+  }
+
+  /**
+   * Full reset: remove translation, remove RTL, persist state.
+   * No page reload needed — instant restoration.
+   */
+  function resetAll() {
+    removeTranslation();
+    if (isRTLActive()) removeRTL();
+    saveState(false);
+    log.notify('صفحه به حالت اولیه بازگشت', 'success');
   }
 
   // ─── Banner UI ───────────────────────────────────────
@@ -842,7 +887,17 @@
           langDetected: STATE.langDetected,
           langCode: STATE.langCode,
           bannerShown: STATE.bannerShown,
+          hasOriginals: !!(_originalTexts && _originalTexts.size > 0),
         });
+        break;
+
+      case 'remove_translation':
+        sendResponse({ success: removeTranslation() });
+        break;
+
+      case 'reset_all':
+        resetAll();
+        sendResponse({ success: true });
         break;
 
       case 'hide_banner':
