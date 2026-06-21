@@ -17,7 +17,7 @@ Rastin (راستین) is a Chrome extension that translates non-Persian web page
 ## Project Structure
 
 ```text
-RTL Translator/
+Rastin/
   _locales/en/messages.json     # English i18n
   _locales/fa/messages.json     # Persian i18n
   fonts/IRANYekanX/             # 3 TTF weights (Regular, Medium, DemiBold)

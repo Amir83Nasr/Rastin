@@ -10,6 +10,15 @@
   var ERR = RastinErrors.CODE;
   var log = RastinErrors.createLogger('content');
 
+  /** Check extension context is still valid (not reloaded/updated). */
+  function isExtensionValid() {
+    try {
+      return !!chrome.runtime.id;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // ─── Translation Cache ──────────────────────────────
   // In-memory cache for translated texts.
   // Key: original text, Value: translated text.
@@ -21,7 +30,7 @@
   /** Load cache from chrome.storage.session into transCache. */
   function sessionLoadCache() {
     return new Promise(function (resolve) {
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) {
+      if (!isExtensionValid()) {
         resolve();
         return;
       }
@@ -47,7 +56,7 @@
     _cachePersistPending = true;
     Promise.resolve().then(function () {
       _cachePersistPending = false;
-      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.session) return;
+      if (!isExtensionValid()) return;
       var data = {};
       data[SESSION_CACHE_KEY] = transCache;
       chrome.storage.session.set(data, function () {
@@ -128,7 +137,9 @@
   const MAX_TRANS_RETRIES = 2;
   const RETRY_DELAY_MS = 1000;
   const BATCH_SIZE = 30;
-  const BATCH_CONCURRENCY = 3;
+  const BATCH_CONCURRENCY = 5;
+  const FIRST_BATCH_SIZE = 7;
+  const SMALL_PAGE_THRESHOLD = 40;
 
   // ─── Code Detection (from module) ────────────────────
   var shouldTranslateNode = CodeDetection.createShouldTranslateNode(SKIP_TAGS, SKIP_PREFIXES);
@@ -439,63 +450,50 @@
    * Translate a batch of texts, with individual caching.
    * Only texts NOT in cache are sent to the API.
    */
-  async function translateBatch(texts) {
-    var SEP = ' ||| ';
+  /**
+   * Translate an array of texts with controlled concurrency.
+   * Returns translated texts in the same order as input.
+   * Handles caching internally (checks cache first, persists results).
+   */
+  async function translateAll(texts) {
     var results = new Array(texts.length);
     var uncached = [];
-    var uncachedIndexes = [];
+    var uncachedIdx = [];
 
     // Phase 1: collect cache hits & build uncached list
     for (var i = 0; i < texts.length; i++) {
-      var t = texts[i];
-      if (transCache[t]) {
-        results[i] = transCache[t];
+      if (transCache[texts[i]]) {
+        results[i] = transCache[texts[i]];
       } else {
-        results[i] = null; // placeholder
-        uncached.push(t);
-        uncachedIndexes.push(i);
+        uncached.push(texts[i]);
+        uncachedIdx.push(i);
       }
     }
 
     // All cache hits — no API call needed
     if (uncached.length === 0) return results;
 
-    // Phase 2: send only uncached texts to API
-    var combined = uncached.join(SEP);
-    var translated = await translateText(combined);
-    var parts = translated.split(SEP);
+    // Phase 2: translate uncached texts with controlled concurrency
+    var queue = uncached.map(function (text, pos) {
+      return { text: text, resultPos: pos };
+    });
 
-    // Error recovery: if split result doesn't match expected count,
-    // retry each text individually to isolate problematic entries
-    if (parts.length !== uncached.length) {
-      log.warn(ERR.TRANS_BATCH_MISMATCH, 'Batch split mismatch, retrying individually', {
-        expected: uncached.length,
-        got: parts.length,
-      });
-      for (var r = 0; r < uncached.length; r++) {
-        var singleIdx = uncachedIndexes[r];
-        var singleOrig = texts[singleIdx];
-        var singleResult = await translateText(singleOrig);
-        results[singleIdx] = singleResult;
-        transCache[singleOrig] = singleResult;
+    async function worker() {
+      while (queue.length) {
+        var item = queue.shift();
+        var translated = await translateText(item.text);
+        var resIdx = uncachedIdx[item.resultPos];
+        results[resIdx] = translated;
+        transCache[item.text] = translated;
       }
-      sessionPersistCache();
-      return results;
     }
 
-    // Phase 3: fill in results & update cache
-    for (var j = 0; j < uncached.length; j++) {
-      var idx = uncachedIndexes[j];
-      var original = texts[idx];
-      var translation = parts[j] || original;
-      results[idx] = translation;
-      // Cache individual result
-      transCache[original] = translation;
-    }
+    var pool = Math.min(BATCH_CONCURRENCY, queue.length);
+    var workers = [];
+    for (var w = 0; w < pool; w++) workers.push(worker());
+    await Promise.all(workers);
 
-    // Periodically persist cache (every 20 unique translations)
     sessionPersistCache();
-
     return results;
   }
 
@@ -570,8 +568,9 @@
    * Each chunk's DOM updates are applied via rAF before the
    * next idle callback fires.
    */
-  function scheduleDeferredChunks(chunks, batchResults, resultOffset, textMap) {
+  function scheduleDeferredChunks(chunks, textMap) {
     var idx = 0;
+    var totalTranslated = 0;
 
     function processNext() {
       return new Promise(function (resolve) {
@@ -583,16 +582,22 @@
         var chunkIdx = idx++;
         requestIdleCallback(
           function () {
-            // Kick off async translation work
+            // Translate all texts in this chunk with controlled concurrency
             resolve(
-              translateBatch(chunks[chunkIdx])
-                .then(function (translatedBatch) {
-                  batchResults[resultOffset + chunkIdx] = translatedBatch;
-                  // Apply this single chunk's DOM updates via rAF
-                  return applyTranslationDOMUpdates([chunks[chunkIdx]], [translatedBatch], textMap);
+              translateAll(chunks[chunkIdx])
+                .then(function (results) {
+                  // Apply this chunk's DOM updates via rAF
+                  return applyTranslationDOMUpdates([chunks[chunkIdx]], [results], textMap);
                 })
-                .then(function () {
+                .then(function (count) {
+                  totalTranslated += count;
                   // Schedule the next chunk
+                  return processNext();
+                })
+                .catch(function (err) {
+                  log.warn(ERR.TRANS_API_FAILURE, 'Deferred chunk failed, skipping', {
+                    error: err.message,
+                  });
                   return processNext();
                 }),
             );
@@ -602,7 +607,9 @@
       });
     }
 
-    return processNext();
+    return processNext().then(function () {
+      return totalTranslated;
+    });
   }
 
   // ─── SPA / Dynamic Content Observer (MutationObserver) ──
@@ -658,10 +665,17 @@
     var chunks = chunkArray(uniqueTexts, BATCH_SIZE);
     var deferredProcess = function (chunkIdx) {
       if (chunkIdx >= chunks.length) return;
-      translateBatch(chunks[chunkIdx]).then(function (translated) {
-        applyTranslationDOMUpdates([chunks[chunkIdx]], [translated], textMap);
-        deferredProcess(chunkIdx + 1);
-      });
+      translateAll(chunks[chunkIdx])
+        .then(function (translated) {
+          applyTranslationDOMUpdates([chunks[chunkIdx]], [translated], textMap);
+          deferredProcess(chunkIdx + 1);
+        })
+        .catch(function (err) {
+          log.warn(ERR.TRANS_API_FAILURE, 'SPA mutation chunk failed, skipping', {
+            error: err.message,
+          });
+          deferredProcess(chunkIdx + 1);
+        });
     };
     deferredProcess(0);
   }
@@ -739,7 +753,7 @@
 
       // ── Split into priority (visible) and deferred (off-screen) ──
       var splitIdx = uniqueTexts.length;
-      if (visibleTexts) {
+      if (visibleTexts && uniqueTexts.length >= SMALL_PAGE_THRESHOLD) {
         for (var si = 0; si < uniqueTexts.length; si++) {
           if (!visibleTexts[uniqueTexts[si]]) {
             splitIdx = si;
@@ -750,7 +764,6 @@
       var priorityTexts = uniqueTexts.slice(0, splitIdx);
       var deferredTexts = uniqueTexts.slice(splitIdx);
 
-      var priorityChunks = chunkArray(priorityTexts, BATCH_SIZE);
       var deferredChunks = chunkArray(deferredTexts, BATCH_SIZE);
 
       log.info(
@@ -760,74 +773,77 @@
           ' priority + ' +
           deferredTexts.length +
           ' deferred texts across ' +
-          (priorityChunks.length + deferredChunks.length) +
-          ' batches',
+          Object.keys(textMap).length +
+          ' unique texts',
       );
 
-      // ── Phase 1: translate priority chunks (parallel workers) ──
-      var allBatchResults = [];
+      // ── Phase 1: translate priority texts (controlled concurrency) ──
       var translatedCount = 0;
+      var DOM_BATCH_SIZE = 15;
 
-      if (priorityChunks.length > 0) {
-        allBatchResults = new Array(priorityChunks.length);
-        var chunkQueue = priorityChunks.map(function (chunk, idx) {
-          return { chunk: chunk, idx: idx };
+      if (priorityTexts.length > 0) {
+        var allPriorityResults = new Array(priorityTexts.length);
+        var textQueue = priorityTexts.map(function (t, i) {
+          return { text: t, idx: i };
         });
+        var domPending = [];
 
-        async function batchWorker() {
-          while (chunkQueue.length) {
-            var item = chunkQueue.shift();
-            allBatchResults[item.idx] = await translateBatch(item.chunk);
+        async function transWorker() {
+          while (textQueue.length) {
+            var item = textQueue.shift();
+            allPriorityResults[item.idx] = await translateText(item.text);
+            transCache[item.text] = allPriorityResults[item.idx];
+
+            // Accumulate for incremental DOM update
+            domPending.push({
+              text: item.text,
+              translated: allPriorityResults[item.idx],
+            });
+
+            // Apply DOM when batch threshold reached or queue exhausted
+            if (domPending.length >= DOM_BATCH_SIZE || textQueue.length === 0) {
+              var batch = domPending.splice(0, DOM_BATCH_SIZE);
+              var bTexts = batch.map(function (b) {
+                return b.text;
+              });
+              var bResults = batch.map(function (b) {
+                return b.translated;
+              });
+              translatedCount += await applyTranslationDOMUpdates([bTexts], [bResults], textMap);
+            }
           }
         }
 
+        var poolSize = Math.min(BATCH_CONCURRENCY, priorityTexts.length);
         var workers = [];
-        var workerCount = Math.min(BATCH_CONCURRENCY, priorityChunks.length);
-        for (var w = 0; w < workerCount; w++) {
-          workers.push(batchWorker());
-        }
+        for (var w = 0; w < poolSize; w++) workers.push(transWorker());
         await Promise.all(workers);
 
-        // ── Phase 1B: rAF DOM updates for priority chunks ──
-        translatedCount += await applyTranslationDOMUpdates(
-          priorityChunks,
-          allBatchResults,
-          textMap,
-        );
+        // Flush any remaining DOM updates
+        if (domPending.length > 0) {
+          var bTexts = domPending.map(function (b) {
+            return b.text;
+          });
+          var bResults = domPending.map(function (b) {
+            return b.translated;
+          });
+          translatedCount += await applyTranslationDOMUpdates([bTexts], [bResults], textMap);
+        }
+
+        sessionPersistCache();
       }
 
       // ── Phase 2: deferred chunks via requestIdleCallback ──
       if (deferredChunks.length > 0) {
-        await scheduleDeferredChunks(
-          deferredChunks,
-          allBatchResults,
-          priorityChunks.length,
-          textMap,
-        );
-        // Count translated from deferred results
-        var deferredResults = allBatchResults.slice(priorityChunks.length);
-        for (var dr = 0; dr < deferredResults.length; dr++) {
-          if (deferredResults[dr]) {
-            for (var dt = 0; dt < deferredChunks[dr].length; dt++) {
-              if (deferredResults[dr][dt] && deferredResults[dr][dt] !== deferredChunks[dr][dt])
-                translatedCount++;
-            }
-          }
-        }
+        var deferredCount = await scheduleDeferredChunks(deferredChunks, textMap);
+        translatedCount += deferredCount;
       }
 
       STATE.translated = translatedCount > 0;
       if (STATE.translated) observeDOMChanges();
 
       if (translatedCount > 0) {
-        log.info(
-          null,
-          'Translated ' +
-            translatedCount +
-            ' unique texts across ' +
-            (priorityChunks.length + deferredChunks.length) +
-            ' batches',
-        );
+        log.info(null, 'Translated ' + translatedCount + ' unique texts across all chunks');
       } else {
         log.info(null, 'No new translations applied (all texts were already Persian)');
       }
@@ -1088,11 +1104,13 @@
       };
       localStorage.setItem('rtl_translator_state', JSON.stringify(data));
 
-      chrome.storage.local.set({
-        rtl_state: data,
-        last_domain: domain,
-        last_active: activated,
-      });
+      if (isExtensionValid()) {
+        chrome.storage.local.set({
+          rtl_state: data,
+          last_domain: domain,
+          last_active: activated,
+        });
+      }
     } catch (e) {
       log.warn(ERR.STORAGE_WRITE_FAIL, 'Failed to persist state', {
         error: e.message,
@@ -1116,64 +1134,76 @@
 
   // ─── Message Listener (Popup ↔ Content) ──────────────
   chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
-    switch (message.action) {
-      case 'translate':
-        applyRTL();
-        translatePage().then(function (ok) {
-          if (ok) ensurePersistedFont();
-          saveState(true);
-          sendResponse({ success: ok, translated: STATE.translated });
-        });
-        return true; // async
-
-      case 'apply_rtl':
-        applyRTL();
-        saveState(true);
-        sendResponse({ success: true, rtl: true });
-        break;
-
-      case 'remove_rtl':
-        removeRTL();
-        saveState(false);
-        sendResponse({ success: true, rtl: false });
-        break;
-
-      case 'toggle_rtl':
-        if (isRTLActive()) {
-          removeRTL();
-          sendResponse({ success: true, rtl: false });
-        } else {
+    try {
+      switch (message.action) {
+        case 'translate':
           applyRTL();
+          translatePage().then(function (ok) {
+            if (ok) ensurePersistedFont();
+            saveState(true);
+            sendResponse({ success: ok, translated: STATE.translated });
+          });
+          return true; // async
+
+        case 'apply_rtl':
+          applyRTL();
+          saveState(true);
           sendResponse({ success: true, rtl: true });
-        }
-        saveState(isRTLActive());
-        break;
+          break;
 
-      case 'get_status':
-        sendResponse({
-          translated: STATE.translated,
-          translating: STATE.translating,
-          rtl: isRTLActive(),
-          langDetected: STATE.langDetected,
-          langCode: STATE.langCode,
-          bannerShown: STATE.bannerShown,
-          hasOriginals: !!(_originalTexts && _originalTexts.size > 0),
-        });
-        break;
+        case 'remove_rtl':
+          removeRTL();
+          saveState(false);
+          sendResponse({ success: true, rtl: false });
+          break;
 
-      case 'remove_translation':
-        sendResponse({ success: removeTranslation() });
-        break;
+        case 'toggle_rtl':
+          if (isRTLActive()) {
+            removeRTL();
+            sendResponse({ success: true, rtl: false });
+          } else {
+            applyRTL();
+            sendResponse({ success: true, rtl: true });
+          }
+          saveState(isRTLActive());
+          break;
 
-      case 'reset_all':
-        resetAll();
-        sendResponse({ success: true });
-        break;
+        case 'get_status':
+          sendResponse({
+            translated: STATE.translated,
+            translating: STATE.translating,
+            rtl: isRTLActive(),
+            langDetected: STATE.langDetected,
+            langCode: STATE.langCode,
+            bannerShown: STATE.bannerShown,
+            hasOriginals: !!(_originalTexts && _originalTexts.size > 0),
+          });
+          break;
 
-      case 'hide_banner':
-        hideBanner();
-        sendResponse({ success: true });
-        break;
+        case 'remove_translation':
+          sendResponse({ success: removeTranslation() });
+          break;
+
+        case 'reset_all':
+          resetAll();
+          sendResponse({ success: true });
+          break;
+
+        case 'hide_banner':
+          hideBanner();
+          sendResponse({ success: true });
+          break;
+      }
+    } catch (err) {
+      log.error(ERR.UNKNOWN, 'Message handler error', {
+        action: message && message.action,
+        error: err.message,
+      });
+      try {
+        sendResponse({ success: false, error: err.message });
+      } catch (_) {
+        /* sendResponse may already be async-disconnected */
+      }
     }
   });
 
@@ -1225,8 +1255,14 @@
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', function () {
+      init().catch(function (err) {
+        log.error(ERR.UNKNOWN, 'Init failed (DOMContentLoaded)', { error: err.message });
+      });
+    });
   } else {
-    init();
+    init().catch(function (err) {
+      log.error(ERR.UNKNOWN, 'Init failed', { error: err.message });
+    });
   }
 })();

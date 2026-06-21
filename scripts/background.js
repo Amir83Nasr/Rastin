@@ -19,6 +19,27 @@ var log = (Errs.createLogger && Errs.createLogger('background')) || {
 };
 var ERR = Errs.CODE || {};
 
+/** Send a message to a tab with lastError logging. */
+function tabMsg(tabId, msg) {
+  try {
+    chrome.tabs.sendMessage(tabId, msg, function () {
+      if (chrome.runtime.lastError) {
+        log.warn(ERR.MSG_CONNECTION_FAIL, 'sendMessage to tab failed', {
+          tabId: tabId,
+          action: msg && msg.action,
+          error: chrome.runtime.lastError.message,
+        });
+      }
+    });
+  } catch (err) {
+    log.warn(ERR.MSG_CONNECTION_FAIL, 'sendMessage to tab threw', {
+      tabId: tabId,
+      action: msg && msg.action,
+      error: err.message,
+    });
+  }
+}
+
 // ─── Install ──────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(function (details) {
   if (details.reason === 'install') {
@@ -56,21 +77,13 @@ if (chrome.contextMenus) {
         return;
       }
 
-      try {
-        if (info.menuItemId === 'rtl-translate-page') {
-          chrome.tabs.sendMessage(tab.id, { action: 'apply_rtl' });
-          chrome.tabs.sendMessage(tab.id, { action: 'translate' });
-          log.info(null, 'Context menu: translate page');
-        } else if (info.menuItemId === 'rtl-toggle-rtl') {
-          chrome.tabs.sendMessage(tab.id, { action: 'toggle_rtl' });
-          log.info(null, 'Context menu: toggle RTL');
-        }
-      } catch (err) {
-        log.error(ERR.MSG_CONNECTION_FAIL, 'Failed to send context menu action to tab', {
-          tabId: tab.id,
-          menuItemId: info.menuItemId,
-          error: err.message,
-        });
+      if (info.menuItemId === 'rtl-translate-page') {
+        tabMsg(tab.id, { action: 'apply_rtl' });
+        tabMsg(tab.id, { action: 'translate' });
+        log.info(null, 'Context menu: translate page');
+      } else if (info.menuItemId === 'rtl-toggle-rtl') {
+        tabMsg(tab.id, { action: 'toggle_rtl' });
+        log.info(null, 'Context menu: toggle RTL');
       }
     });
   } catch (err) {
@@ -88,30 +101,23 @@ if (chrome.commands) {
       return;
     }
 
-    try {
-      switch (command) {
-        case 'toggle-rtl':
-          chrome.tabs.sendMessage(tab.id, { action: 'toggle_rtl' });
-          log.info(null, 'Shortcut: toggle RTL');
-          break;
-        case 'translate-page':
-          chrome.tabs.sendMessage(tab.id, { action: 'apply_rtl' });
-          chrome.tabs.sendMessage(tab.id, { action: 'translate' });
-          log.info(null, 'Shortcut: translate page');
-          break;
-      }
-    } catch (err) {
-      log.error(ERR.MSG_CONNECTION_FAIL, 'Failed to execute keyboard shortcut', {
-        command: command,
-        tabId: tab.id,
-        error: err.message,
-      });
+    switch (command) {
+      case 'toggle-rtl':
+        tabMsg(tab.id, { action: 'toggle_rtl' });
+        log.info(null, 'Shortcut: toggle RTL');
+        break;
+      case 'translate-page':
+        tabMsg(tab.id, { action: 'apply_rtl' });
+        tabMsg(tab.id, { action: 'translate' });
+        log.info(null, 'Shortcut: translate page');
+        break;
     }
   });
 }
 
 // ─── Unhandled error handler ─────────────────────────
 self.addEventListener('unhandledrejection', function (event) {
+  event.preventDefault();
   log.error(ERR.UNKNOWN, 'Unhandled promise rejection in background', {
     reason: event.reason ? event.reason.message || String(event.reason) : 'unknown',
   });

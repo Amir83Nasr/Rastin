@@ -62,9 +62,22 @@ document.addEventListener('DOMContentLoaded', function () {
     return getCurrentTab()
       .then(function (tab) {
         if (!tab || !tab.id) throw new Error('No tab found');
-        return chrome.tabs.sendMessage(tab.id, Object.assign({ action: action }, data));
+        return Promise.race([
+          chrome.tabs.sendMessage(tab.id, Object.assign({ action: action }, data)),
+          new Promise(function (_, reject) {
+            setTimeout(function () {
+              reject(new Error('MSG_TIMEOUT'));
+            }, 10000);
+          }),
+        ]);
       })
       .catch(function (err) {
+        if (err.message === 'MSG_TIMEOUT') {
+          log.warn(ERR.MSG_TIMEOUT || 'MSG_TIMEOUT', 'Message to content script timed out', {
+            action: action,
+          });
+          return null;
+        }
         if (err.message && err.message.indexOf('Could not establish connection') !== -1) {
           // Content script not loaded — not an error for some pages
           return null;
