@@ -412,7 +412,12 @@
         for (var ci = 0; ci < el.classList.length; ci++) {
           var cls = el.classList[ci].toLowerCase();
           // Highlight wrappers and language-* classes are strong code signals
-          if (cls.indexOf('highlight') !== -1 || cls.indexOf('language-') !== -1) return true;
+          if (
+            cls.indexOf('highlight') !== -1 ||
+            cls.indexOf('language-') !== -1 ||
+            cls.indexOf('text-plain') !== -1
+          )
+            return true;
         }
       }
       el = el.parentElement;
@@ -771,17 +776,242 @@
       }
     }
 
-    // YouTube: on watch pages, scope to #primary (player + title + description + comments)
-    if (host === 'www.youtube.com' && window.location.pathname.startsWith('/watch')) {
-      var primary = document.querySelector('#primary');
-      if (primary) {
-        log.info(null, 'YouTube watch page detected — scoping translation to primary content');
-        return primary;
-      }
-    }
-
     // All other sites: translate the whole page
     return document.body;
+  }
+
+  // ─── YouTube Helpers ──────────────────────────────
+  var _ytCaptionObserver = null;
+  var _ytCaptionCache = Object.create(null);
+  var _ytProcessedCaptions = new WeakSet();
+
+  function isYouTubePage() {
+    return window.location.hostname === 'www.youtube.com';
+  }
+
+  function isYouTubeWatchPage() {
+    return isYouTubePage() && window.location.pathname.startsWith('/watch');
+  }
+
+  function hasPersianChars(text) {
+    return /[؀-ۿ]/.test(text);
+  }
+
+  /**
+   * YouTube-specific translation handler.
+   * Only targets the current video's title and subtitles/captions.
+   * Does NOT touch YouTube's page structure (no RTL, no font injection).
+   */
+  async function translateYouTube() {
+    if (STATE.translating) {
+      log.info(null, 'YouTube translation already in progress, skipping');
+      return false;
+    }
+
+    STATE.translating = true;
+    showTranslationProgress();
+
+    var translatedAny = false;
+
+    try {
+      // -- 1. Video Title --
+      var titleSelectors = [
+        'h1 yt-formatted-string.ytd-video-primary-info-renderer',
+        'h1.title yt-formatted-string',
+        'ytd-video-primary-info-renderer h1 yt-formatted-string',
+        '#title h1 yt-formatted-string',
+        '.ytd-video-primary-info-renderer #title yt-formatted-string',
+      ];
+
+      var titleEl = null;
+      for (var si = 0; si < titleSelectors.length; si++) {
+        titleEl = document.querySelector(titleSelectors[si]);
+        if (titleEl) break;
+      }
+
+      if (titleEl) {
+        var titleText = titleEl.textContent.trim();
+        if (titleText && titleText.length > 1 && !hasPersianChars(titleText)) {
+          log.info(null, 'Translating YouTube video title');
+          var translated = await translateText(titleText);
+          if (translated && translated !== titleText) {
+            // Save original text nodes for restore
+            for (var tci = 0; tci < titleEl.childNodes.length; tci++) {
+              var tcn = titleEl.childNodes[tci];
+              if (tcn.nodeType === Node.TEXT_NODE && tcn.textContent.trim()) {
+                if (!_originalTexts) _originalTexts = new Map();
+                if (!_originalTexts.has(tcn)) _originalTexts.set(tcn, tcn.textContent);
+              }
+            }
+            titleEl.textContent = translated;
+            translatedAny = true;
+            log.info(null, 'YouTube video title translated successfully');
+          }
+        }
+      }
+
+      // -- 2. Captions / Subtitles --
+      setupYouTubeCaptionHandler();
+
+      STATE.translated = translatedAny;
+      return translatedAny;
+    } catch (err) {
+      log.error(ERR.TRANS_API_FAILURE, 'YouTube translation failed', {
+        error: err.message,
+      });
+      STATE.translated = false;
+      return false;
+    } finally {
+      STATE.translating = false;
+      hideTranslationProgress();
+    }
+  }
+
+  /**
+   * Find caption segments inside #movie_player shadow DOM.
+   * Translates non-Persian text to Farsi, applies RTL + font
+   * to Persian text. Sets up a MutationObserver for dynamic
+   * caption changes as the video plays.
+   */
+  function setupYouTubeCaptionHandler() {
+    // First, handle any currently visible captions immediately
+    processYouTubeCaptions();
+
+    // Then set up MutationObserver
+    if (_ytCaptionObserver) {
+      _ytCaptionObserver.disconnect();
+      _ytCaptionObserver = null;
+    }
+
+    var player = document.querySelector('#movie_player');
+    if (!player || !player.shadowRoot) return;
+
+    // Watch the entire shadow DOM for caption container changes
+    _ytCaptionObserver = new MutationObserver(function (mutations) {
+      if (_ytCaptionObserver._pending) return;
+      _ytCaptionObserver._pending = true;
+      requestAnimationFrame(function () {
+        _ytCaptionObserver._pending = false;
+        processYouTubeCaptions();
+      });
+    });
+
+    _ytCaptionObserver.observe(player.shadowRoot, {
+      childList: true,
+      subtree: true,
+    });
+
+    log.info(null, 'YouTube caption handler active');
+  }
+
+  /**
+   * Find all unprocessed caption segments and translate or RTL them.
+   */
+  function processYouTubeCaptions() {
+    var player = document.querySelector('#movie_player');
+    if (!player || !player.shadowRoot) return;
+
+    var segments = player.shadowRoot.querySelectorAll('.ytp-caption-segment');
+    if (segments.length === 0) return;
+
+    for (var psi = 0; psi < segments.length; psi++) {
+      var seg = segments[psi];
+      if (_ytProcessedCaptions.has(seg)) continue;
+      _ytProcessedCaptions.add(seg);
+
+      var text = seg.textContent.trim();
+      if (!text) continue;
+
+      if (hasPersianChars(text)) {
+        // Already Persian -- apply RTL + font for proper display
+        seg.style.direction = 'rtl';
+        seg.style.unicodeBidi = 'embed';
+        seg.style.textAlign = 'right';
+        seg.style.fontFamily = "'IRANYekanX', 'Tahoma', 'Vazirmatn', sans-serif";
+        _ytCaptionCache[text] = 'rtl';
+      } else if (isMeaningfulText(text)) {
+        // Non-Persian -- translate to Farsi
+        translateCaptionSegment(seg, text);
+      }
+    }
+  }
+
+  /**
+   * Translate a single caption segment and apply RTL styling.
+   * Caches the translation so repeated text is instant.
+   */
+  function translateCaptionSegment(seg, text) {
+    // Check cache first
+    if (
+      _ytCaptionCache[text] &&
+      _ytCaptionCache[text] !== 'rtl' &&
+      _ytCaptionCache[text] !== 'translating' &&
+      _ytCaptionCache[text] !== 'skip'
+    ) {
+      seg.textContent = _ytCaptionCache[text];
+      seg.style.direction = 'rtl';
+      seg.style.unicodeBidi = 'embed';
+      seg.style.textAlign = 'right';
+      seg.style.fontFamily = "'IRANYekanX', 'Tahoma', 'Vazirmatn', sans-serif";
+      return;
+    }
+
+    if (_ytCaptionCache[text] === 'translating') return;
+    _ytCaptionCache[text] = 'translating';
+
+    translateText(text)
+      .then(function (translated) {
+        if (translated && translated !== text) {
+          // Save original text for restore
+          for (var tci = 0; tci < seg.childNodes.length; tci++) {
+            var tcn = seg.childNodes[tci];
+            if (tcn.nodeType === Node.TEXT_NODE && tcn.textContent.trim()) {
+              if (!_originalTexts) _originalTexts = new Map();
+              if (!_originalTexts.has(tcn)) _originalTexts.set(tcn, tcn.textContent);
+            }
+          }
+
+          seg.textContent = translated;
+          seg.style.direction = 'rtl';
+          seg.style.unicodeBidi = 'embed';
+          seg.style.textAlign = 'right';
+          seg.style.fontFamily = "'IRANYekanX', 'Tahoma', 'Vazirmatn', sans-serif";
+          _ytCaptionCache[text] = translated;
+        } else {
+          _ytCaptionCache[text] = 'skip';
+        }
+      })
+      .catch(function () {
+        delete _ytCaptionCache[text];
+        _ytProcessedCaptions.delete(seg);
+      });
+  }
+
+  /**
+   * Clean up YouTube captions -- restore originals, disconnect observer.
+   */
+  function cleanupYouTubeCaptions() {
+    if (_ytCaptionObserver) {
+      _ytCaptionObserver.disconnect();
+      _ytCaptionObserver = null;
+    }
+    _ytCaptionCache = Object.create(null);
+    _ytProcessedCaptions = new WeakSet();
+
+    try {
+      var player = document.querySelector('#movie_player');
+      if (player && player.shadowRoot) {
+        var segments = player.shadowRoot.querySelectorAll('.ytp-caption-segment');
+        for (var ci = 0; ci < segments.length; ci++) {
+          segments[ci].style.direction = '';
+          segments[ci].style.unicodeBidi = '';
+          segments[ci].style.textAlign = '';
+          segments[ci].style.fontFamily = '';
+        }
+      }
+    } catch (_) {
+      /* best-effort */
+    }
   }
 
   // ─── Translate Page ─────────────────────────────────
@@ -800,6 +1030,18 @@
     showTranslationProgress();
 
     try {
+      // YouTube: only handle watch page title + captions
+      if (isYouTubePage()) {
+        if (isYouTubeWatchPage()) {
+          return await translateYouTube();
+        }
+        // Non-watch YouTube pages: skip full translation
+        log.info(null, 'YouTube non-watch page - skipping full page translation');
+        STATE.translating = false;
+        hideTranslationProgress();
+        return false;
+      }
+
       // Determine translation root — on GitHub this is the README area only
       var transRoot = getTranslationRoot();
       if (!transRoot) {
@@ -1002,9 +1244,12 @@
     }).join(',');
     // Inner code tags
     root.querySelectorAll(codeTags).forEach(fn);
-    // Outer code-block containers (highlight wrappers, language-* boxes)
+    // Outer code-block containers (highlight wrappers, language-* boxes,
+    // and plain-text code blocks like text/plain on GitHub)
     root
-      .querySelectorAll('.highlight, [class*="language-"], .snippet, .code-block, code-block')
+      .querySelectorAll(
+        '.highlight, [class*="language-"], [class*="text-plain"], .snippet, .code-block, code-block',
+      )
       .forEach(fn);
     // Descend into shadow roots recursively
     root.querySelectorAll('*').forEach(function (el) {
@@ -1021,6 +1266,9 @@
    * Tracks original dir values via data-rastin-dir for cleanup.
    */
   function applyRTL() {
+    // Don't apply RTL to YouTube
+    if (isYouTubePage()) return;
+
     try {
       var root = getTranslationRoot();
       var isScoped = root !== document.body;
@@ -1090,6 +1338,9 @@
    * IRANYekanX (broken ligatures, bad spacing).
    */
   function ensurePersistedFont() {
+    // Don't inject font globally on YouTube (caption font is inline)
+    if (isYouTubePage()) return;
+
     // Scoped site (e.g., GitHub README) — font stays via [data-rastin-has-fa] CSS
     var scoped = document.querySelector('[data-rastin-rtl]');
     if (scoped) {
@@ -1153,6 +1404,7 @@
     _originalTexts.clear();
     STATE.translated = false;
     removePersistedFont();
+    cleanupYouTubeCaptions();
     log.info(null, 'Restored ' + count + ' text nodes to original language');
     return count > 0;
   }
@@ -1171,6 +1423,9 @@
   // ─── Banner UI ───────────────────────────────────────
   function createBanner() {
     if (document.querySelector('.rtl-translator-banner')) return;
+
+    // On YouTube, only show banner on watch pages
+    if (isYouTubePage() && !isYouTubeWatchPage()) return;
 
     var banner = document.createElement('div');
     banner.className = 'rtl-translator-banner';
