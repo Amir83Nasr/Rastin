@@ -725,6 +725,7 @@
     }
 
     STATE.translating = true;
+    showTranslationProgress();
 
     try {
       // Short-circuit: no meaningful text on page
@@ -732,6 +733,7 @@
       if (bodyText.length < 10) {
         log.info(ERR.TRANS_NO_TEXT, 'Page body has no meaningful text, skipping');
         STATE.translating = false;
+        hideTranslationProgress();
         return false;
       }
 
@@ -739,6 +741,7 @@
       if (textNodes.length === 0) {
         log.info(ERR.TRANS_NO_TEXT, 'No translatable text found on page');
         STATE.translating = false;
+        hideTranslationProgress();
         return false;
       }
 
@@ -895,6 +898,7 @@
       return false;
     } finally {
       STATE.translating = false;
+      hideTranslationProgress();
     }
   }
 
@@ -1123,6 +1127,31 @@
       banner.remove();
     }, 300);
     STATE.bannerShown = false;
+  }
+
+  // ─── Translation Progress Indicator ─────────────────
+  var _progressEl = null;
+
+  function showTranslationProgress() {
+    if (_progressEl) return;
+    _progressEl = document.createElement('div');
+    _progressEl.className = 'rastin-progress';
+    _progressEl.innerHTML =
+      '<svg class="rtl-translator-loading-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> در حال ترجمه...';
+    document.body.appendChild(_progressEl);
+    void _progressEl.offsetHeight; // force reflow
+    _progressEl.classList.add('visible');
+  }
+
+  function hideTranslationProgress() {
+    if (!_progressEl) return;
+    _progressEl.classList.remove('visible');
+    setTimeout(function () {
+      if (_progressEl) {
+        _progressEl.remove();
+        _progressEl = null;
+      }
+    }, 300);
   }
 
   // ─── Select-to-Translate ───────────────────────────
@@ -1443,8 +1472,7 @@
     if (isPersianPage()) {
       STATE.langDetected = 'فارسی';
       STATE.langCode = 'fa';
-      applyRTL();
-      log.info(null, 'Persian page detected — RTL auto-applied');
+      log.info(null, 'Persian page detected — no auto-translate needed');
       return;
     }
 
