@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', function () {
   var rtlToggle = document.getElementById('rtlToggle');
   var translateBtn = document.getElementById('translateBtn');
   var autoBannerToggle = document.getElementById('autoBannerToggle');
+  var persianFontToggle = document.getElementById('persianFontToggle');
   var resetBtn = document.getElementById('resetBtn');
   var errorBar = document.getElementById('errorBar');
 
@@ -115,7 +116,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
         detectedLangEl.textContent = status.langDetected || '—';
         rtlToggle.checked = !!status.rtl;
+        persianFontToggle.checked = !!status.persianFont;
         translateBtn.disabled = !!status.translating;
+
+        // Disable Persian font toggle while translating
+        persianFontToggle.disabled = !!status.translating;
       })
       .catch(function (err) {
         setStatus('check', 'خطا در ارتباط', '#ef4444');
@@ -202,6 +207,25 @@ document.addEventListener('DOMContentLoaded', function () {
   autoBannerToggle.addEventListener('change', function () {
     chrome.storage.local.set({ auto_banner: autoBannerToggle.checked });
     log.info(null, 'Auto-banner ' + (autoBannerToggle.checked ? 'enabled' : 'disabled'));
+  });
+
+  persianFontToggle.addEventListener('change', function () {
+    hideError();
+    var action = persianFontToggle.checked ? 'apply_persian_font' : 'remove_persian_font';
+    sendToContent(action)
+      .then(function (result) {
+        if (result && result.success) {
+          log.info(
+            null,
+            'Persian font ' + (persianFontToggle.checked ? 'enabled' : 'disabled') + ' for domain',
+          );
+        }
+        refreshStatus();
+      })
+      .catch(function () {
+        persianFontToggle.checked = !persianFontToggle.checked;
+        showError('اعمال فونت فارسی با خطا مواجه شد');
+      });
   });
 
   resetBtn.addEventListener('click', function () {

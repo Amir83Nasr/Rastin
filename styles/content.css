@@ -332,3 +332,35 @@ html.rtl-translator-active tt {
   opacity: 1;
   transform: translateY(0);
 }
+
+/* ─── Persian Font Mode ──────────────────────
+     When the Persian font toggle is active, apply IRANYekanX
+     to all text-bearing elements so Persian text renders well
+     even without RTL/translation being active.          */
+html.rtl-translator-persian-font body,
+html.rtl-translator-persian-font p,
+html.rtl-translator-persian-font h1,
+html.rtl-translator-persian-font h2,
+html.rtl-translator-persian-font h3,
+html.rtl-translator-persian-font h4,
+html.rtl-translator-persian-font h5,
+html.rtl-translator-persian-font h6,
+html.rtl-translator-persian-font span,
+html.rtl-translator-persian-font div,
+html.rtl-translator-persian-font li,
+html.rtl-translator-persian-font a,
+html.rtl-translator-persian-font label,
+html.rtl-translator-persian-font td,
+html.rtl-translator-persian-font th,
+html.rtl-translator-persian-font blockquote,
+html.rtl-translator-persian-font figcaption,
+html.rtl-translator-persian-font caption,
+html.rtl-translator-persian-font cite,
+html.rtl-translator-persian-font summary {
+  font-family: 'IRANYekanX', 'Tahoma', 'Vazirmatn', sans-serif !important;
+}
+
+/* Scoped (e.g. GitHub README) */
+[data-rastin-persian-font] {
+  font-family: 'IRANYekanX', 'Tahoma', 'Vazirmatn', sans-serif !important;
+}
