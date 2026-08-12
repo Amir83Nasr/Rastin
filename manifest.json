@@ -6,7 +6,7 @@
   "description": "__MSG_appDesc__",
   "default_locale": "en",
 
-  "permissions": ["storage", "activeTab", "contextMenus"],
+  "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": ["https://translate.googleapis.com/*"],
 
   "action": {

@@ -56,53 +56,70 @@ chrome.runtime.onInstalled.addListener(function (details) {
   }
 });
 
-// ─── Context Menu (right-click) ───────────────────────
-if (chrome.contextMenus) {
-  try {
-    chrome.contextMenus.create({
-      id: 'rtl-translate-page',
-      title: 'ترجمه صفحه به فارسی',
-      contexts: ['page'],
-    });
+// ─── Programmatic Injection ──────────────────────────
+/**
+ * Inject content scripts and CSS into a tab on demand.
+ * This handles tabs that were open before extension load/update.
+ */
+function injectContentScript(tabId) {
+  return new Promise(function (resolve) {
+    if (!chrome.scripting) {
+      log.error(ERR.UNKNOWN, 'chrome.scripting API not available');
+      resolve(false);
+      return;
+    }
 
-    chrome.contextMenus.create({
-      id: 'rtl-toggle-rtl',
-      title: 'فعال/غیرفعال کردن RTL',
-      contexts: ['page'],
-    });
+    // 1. Insert CSS
+    chrome.scripting.insertCSS(
+      {
+        target: { tabId: tabId },
+        files: ['styles/content.css'],
+      },
+      function () {
+        if (chrome.runtime.lastError) {
+          log.warn(ERR.UNKNOWN, 'CSS injection failed', {
+            error: chrome.runtime.lastError.message,
+          });
+        }
 
-    chrome.contextMenus.create({
-      id: 'rtl-translate-selection',
-      title: 'ترجمه متن انتخاب شده',
-      contexts: ['selection'],
-    });
-
-    chrome.contextMenus.onClicked.addListener(function (info, tab) {
-      if (!tab || !tab.id) {
-        log.warn(ERR.MSG_NO_TAB, 'Context menu clicked but no tab available');
-        return;
-      }
-
-      switch (info.menuItemId) {
-        case 'rtl-translate-page':
-          tabMsg(tab.id, { action: 'apply_rtl' });
-          tabMsg(tab.id, { action: 'translate' });
-          log.info(null, 'Context menu: translate page');
-          break;
-        case 'rtl-toggle-rtl':
-          tabMsg(tab.id, { action: 'toggle_rtl' });
-          log.info(null, 'Context menu: toggle RTL');
-          break;
-        case 'rtl-translate-selection':
-          tabMsg(tab.id, { action: 'translate_selection' });
-          log.info(null, 'Context menu: translate selection');
-          break;
-      }
-    });
-  } catch (err) {
-    log.error(ERR.UNKNOWN, 'Failed to create context menus', { error: err.message });
-  }
+        // 2. Execute JS (sequentially to ensure dependencies)
+        chrome.scripting.executeScript(
+          {
+            target: { tabId: tabId },
+            files: ['lib/errors.js', 'scripts/code-detection.js', 'scripts/content.js'],
+          },
+          function () {
+            if (chrome.runtime.lastError) {
+              log.error(ERR.UNKNOWN, 'JS injection failed', {
+                error: chrome.runtime.lastError.message,
+              });
+              resolve(false);
+            } else {
+              log.info(null, 'Content scripts injected into tab ' + tabId);
+              resolve(true);
+            }
+          },
+        );
+      },
+    );
+  });
 }
+
+// ─── Message Listener (Popup/Content ↔ Background) ───
+chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
+  if (message.action === 'inject_scripts') {
+    var tabId = message.tabId || (sender.tab && sender.tab.id);
+    if (!tabId) {
+      sendResponse({ success: false, error: 'No tabId' });
+      return;
+    }
+
+    injectContentScript(tabId).then(function (success) {
+      sendResponse({ success: success });
+    });
+    return true; // async
+  }
+});
 
 // ─── Keyboard Shortcuts ──────────────────────────────
 if (chrome.commands) {

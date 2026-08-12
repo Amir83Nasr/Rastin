@@ -19,6 +19,8 @@ document.addEventListener('DOMContentLoaded', function () {
   var translateBtn = document.getElementById('translateBtn');
   var autoBannerToggle = document.getElementById('autoBannerToggle');
   var persianFontToggle = document.getElementById('persianFontToggle');
+  var fontSizeSelect = document.getElementById('fontSizeSelect');
+  var fontWeightSelect = document.getElementById('fontWeightSelect');
   var resetBtn = document.getElementById('resetBtn');
   var errorBar = document.getElementById('errorBar');
 
@@ -60,6 +62,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function sendToContent(action, data) {
     data = data || {};
+    return sendToContentImpl(action, data, false);
+  }
+
+  function sendToContentImpl(action, data, retry) {
+    data = data || {};
     return getCurrentTab()
       .then(function (tab) {
         if (!tab || !tab.id) throw new Error('No tab found');
@@ -80,8 +87,11 @@ document.addEventListener('DOMContentLoaded', function () {
           return null;
         }
         if (err.message && err.message.indexOf('Could not establish connection') !== -1) {
-          // Content script not loaded — not an error for some pages
-          return null;
+          if (retry) {
+            return null;
+          }
+          // Content script not loaded — inject and retry once
+          return injectAndRetry(action, data);
         }
         log.warn(ERR.MSG_CONNECTION_FAIL || 'MSG_CONNECTION_FAIL', 'sendToContent failed', {
           action: action,
@@ -89,6 +99,34 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         throw err;
       });
+  }
+
+  function injectAndRetry(action, data) {
+    return getCurrentTab().then(function (tab) {
+      if (!tab || !tab.id) return null;
+      return new Promise(function (resolve) {
+        chrome.runtime.sendMessage(
+          { action: 'inject_scripts', tabId: tab.id },
+          function (response) {
+            if (chrome.runtime.lastError) {
+              log.warn(ERR.UNKNOWN, 'Inject request failed', {
+                error: chrome.runtime.lastError.message,
+              });
+              resolve(null);
+              return;
+            }
+            if (response && response.success) {
+              // Wait a tick for content script to init, then retry original request
+              setTimeout(function () {
+                sendToContentImpl(action, data, true).then(resolve);
+              }, 300);
+            } else {
+              resolve(null);
+            }
+          },
+        );
+      });
+    });
   }
 
   // ─── Refresh Status ─────────────────────────────────
@@ -117,10 +155,14 @@ document.addEventListener('DOMContentLoaded', function () {
         detectedLangEl.textContent = status.langDetected || '—';
         rtlToggle.checked = !!status.rtl;
         persianFontToggle.checked = !!status.persianFont;
+        fontSizeSelect.value = status.fontSize || 'default';
+        fontWeightSelect.value = status.fontWeight || 'default';
         translateBtn.disabled = !!status.translating;
 
-        // Disable Persian font toggle while translating
+        // Disable font toggles while translating
         persianFontToggle.disabled = !!status.translating;
+        fontSizeSelect.disabled = !!status.translating;
+        fontWeightSelect.disabled = !!status.translating;
       })
       .catch(function (err) {
         setStatus('check', 'خطا در ارتباط', '#ef4444');
@@ -133,8 +175,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // ─── Load Settings ─────────────────────────────────
   function loadSettings() {
-    chrome.storage.local.get(['auto_banner'], function (result) {
+    chrome.storage.local.get(['auto_banner', 'font_size', 'font_weight'], function (result) {
       autoBannerToggle.checked = result.auto_banner !== false;
+      fontSizeSelect.value = result.font_size || 'default';
+      fontWeightSelect.value = result.font_weight || 'default';
     });
   }
 
@@ -225,6 +269,40 @@ document.addEventListener('DOMContentLoaded', function () {
       .catch(function () {
         persianFontToggle.checked = !persianFontToggle.checked;
         showError('اعمال فونت فارسی با خطا مواجه شد');
+      });
+  });
+
+  fontSizeSelect.addEventListener('change', function () {
+    hideError();
+    var size = fontSizeSelect.value;
+    sendToContent('apply_font_size', { size: size })
+      .then(function (result) {
+        if (result && result.success) {
+          log.info(null, 'Font size set to ' + size);
+          chrome.storage.local.set({ font_size: size });
+        }
+        refreshStatus();
+      })
+      .catch(function () {
+        showError('تنظیم سایز فونت با خطا مواجه شد');
+        refreshStatus();
+      });
+  });
+
+  fontWeightSelect.addEventListener('change', function () {
+    hideError();
+    var weight = fontWeightSelect.value;
+    sendToContent('apply_font_weight', { weight: weight })
+      .then(function (result) {
+        if (result && result.success) {
+          log.info(null, 'Font weight set to ' + weight);
+          chrome.storage.local.set({ font_weight: weight });
+        }
+        refreshStatus();
+      })
+      .catch(function () {
+        showError('تنظیم وزن فونت با خطا مواجه شد');
+        refreshStatus();
       });
   });
 
