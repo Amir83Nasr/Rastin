@@ -1,0 +1,14 @@
+#!/bin/sh
+# ── Pre-push hook: run checks ──────
+
+echo "🚀 Running pre-push checks…"
+
+# Check formatting
+if npx --yes prettier --check . >/dev/null 2>&1; then
+  echo "✔ Formatting check passed"
+else
+  echo "❌ Formatting check failed. Run 'npx prettier --write .'"
+  exit 1
+fi
+
+echo "✔ Pre-push checks passed"
