@@ -96,6 +96,60 @@ html.rtl-translator-active tt {
   font-family: 'Cartograph CF', 'Courier New', 'Consolas', 'Monaco', monospace !important;
 }
 
+/* ─── Font Size Override ─────────────────────────────── */
+html.rastin-font-size-sm {
+  font-size: 13px !important;
+}
+html.rastin-font-size-md {
+  font-size: 16px !important;
+}
+html.rastin-font-size-lg {
+  font-size: 19px !important;
+}
+html.rastin-font-size-xl {
+  font-size: 23px !important;
+}
+
+[data-rastin-font-size-sm] {
+  font-size: 13px !important;
+}
+[data-rastin-font-size-md] {
+  font-size: 16px !important;
+}
+[data-rastin-font-size-lg] {
+  font-size: 19px !important;
+}
+[data-rastin-font-size-xl] {
+  font-size: 23px !important;
+}
+
+/* ─── Font Weight Override ──────────────────────────── */
+html.rastin-font-weight-light {
+  font-weight: 300 !important;
+}
+html.rastin-font-weight-medium {
+  font-weight: 500 !important;
+}
+html.rastin-font-weight-bold {
+  font-weight: 700 !important;
+}
+html.rastin-font-weight-black {
+  font-weight: 900 !important;
+}
+
+[data-rastin-font-weight-light] {
+  font-weight: 300 !important;
+}
+[data-rastin-font-weight-medium] {
+  font-weight: 500 !important;
+}
+[data-rastin-font-weight-bold] {
+  font-weight: 700 !important;
+}
+[data-rastin-font-weight-black] {
+  font-weight: 900 !important;
+}
+
 /* ─── Translation Banner ─────────────────────────────── */
 .rtl-translator-banner {
   position: fixed;
@@ -192,42 +246,57 @@ html.rtl-translator-active tt {
   }
 }
 
-/* ─── Select-to-Translate Tooltip ──────────────────────── */
-.rastin-sel-tooltip {
-  position: absolute;
+/* ─── Selection Translation Panel ──────────────────────── */
+.rastin-sel-panel {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
   z-index: 2147483646;
   background: #101010;
   color: #f3f4ed;
-  border-radius: 6px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
   font-family: 'IRANYekanX', 'Tahoma', sans-serif;
   direction: rtl;
-  font-size: 13px;
+  font-size: 14px;
+  width: 300px;
+  max-height: 400px;
+  display: flex;
+  flex-direction: column;
   pointer-events: auto;
-  animation: rastin-sel-fadein 0.15s ease-out;
-  white-space: nowrap;
+  animation: rastin-sel-fadein 0.2s ease-out;
 }
 
-.rastin-sel-tooltip-body {
+.rastin-sel-panel-header {
+  padding: 10px 15px;
+  border-bottom: 1px solid rgba(243, 244, 237, 0.1);
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  font-weight: bold;
+}
+
+.rastin-sel-panel-body {
+  padding: 15px;
+  overflow-y: auto;
+  flex: 1;
 }
 
 .rastin-sel-translate-btn {
-  background: transparent;
-  border: none;
+  background: rgba(243, 244, 237, 0.1);
+  border: 1px solid rgba(243, 244, 237, 0.2);
   color: #f3f4ed;
   cursor: pointer;
   font-family: inherit;
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 4px;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 5px;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 8px;
   transition: background 0.15s;
+  width: 100%;
+  justify-content: center;
 }
 
 .rastin-sel-translate-btn:hover {
@@ -286,10 +355,29 @@ html.rtl-translator-active tt {
   color: #f3f4ed;
 }
 
+.rastin-sel-close-btn {
+  background: transparent;
+  border: none;
+  color: #88887c;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.rastin-sel-close-btn:hover {
+  opacity: 1;
+  color: #f3f4ed;
+}
+
 .rastin-sel-error {
   color: #ef4444;
-  font-size: 12px;
-  padding: 4px 8px;
+  font-size: 13px;
+  text-align: center;
+  padding: 10px;
 }
 
 @keyframes rastin-sel-fadein {

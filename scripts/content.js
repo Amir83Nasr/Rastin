@@ -132,6 +132,8 @@
     bannerShown: false,
     langDetected: null,
     langCode: null,
+    fontSize: 'default',
+    fontWeight: 'default',
   };
 
   // ─── Original Text Store ──────────────────────────────
@@ -241,19 +243,22 @@
         "src:url('" +
         chrome.runtime.getURL('fonts/IRANYekanX/IRANYekanX-Regular.ttf') +
         "') format('truetype');" +
-        'font-weight:400;font-style:normal;font-display:swap;}' +
+        'font-weight:400;font-style:normal;font-display:swap;' +
+        'unicode-range:U+0600-06FF,U+0750-077F,U+08A0-08FF,U+FB50-FDFF,U+FE70-FEFF;}' +
         '@font-face {' +
         "font-family:'IRANYekanX';" +
         "src:url('" +
         chrome.runtime.getURL('fonts/IRANYekanX/IRANYekanX-Medium.ttf') +
         "') format('truetype');" +
-        'font-weight:500;font-style:normal;font-display:swap;}' +
+        'font-weight:500;font-style:normal;font-display:swap;' +
+        'unicode-range:U+0600-06FF,U+0750-077F,U+08A0-08FF,U+FB50-FDFF,U+FE70-FEFF;}' +
         '@font-face {' +
         "font-family:'IRANYekanX';" +
         "src:url('" +
         chrome.runtime.getURL('fonts/IRANYekanX/IRANYekanX-DemiBold.ttf') +
         "') format('truetype');" +
-        'font-weight:600;font-style:normal;font-display:swap;}' +
+        'font-weight:600;font-style:normal;font-display:swap;' +
+        'unicode-range:U+0600-06FF,U+0750-077F,U+08A0-08FF,U+FB50-FDFF,U+FE70-FEFF;}' +
         '@font-face {' +
         "font-family:'Cartograph CF';" +
         "src:url('" +
@@ -1159,6 +1164,57 @@
     );
   }
 
+  // ─── Font Size & Weight Application ──────────────────
+  function applyFontSize(size) {
+    STATE.fontSize = size || 'default';
+    var scoped = document.querySelector('[data-rastin-rtl]');
+
+    // Remove existing font-size classes/attributes
+    document.documentElement.className = document.documentElement.className
+      .replace(/\brastin-font-size-\S+\b/g, '')
+      .trim();
+    if (scoped) {
+      Array.from(scoped.attributes).forEach(function (attr) {
+        if (attr.name.indexOf('data-rastin-font-size-') === 0) {
+          scoped.removeAttribute(attr.name);
+        }
+      });
+    }
+
+    if (!size || size === 'default') return;
+
+    if (scoped) {
+      scoped.setAttribute('data-rastin-font-size-' + size, '');
+    } else {
+      document.documentElement.classList.add('rastin-font-size-' + size);
+    }
+  }
+
+  function applyFontWeight(weight) {
+    STATE.fontWeight = weight || 'default';
+    var scoped = document.querySelector('[data-rastin-rtl]');
+
+    // Remove existing font-weight classes/attributes
+    document.documentElement.className = document.documentElement.className
+      .replace(/\brastin-font-weight-\S+\b/g, '')
+      .trim();
+    if (scoped) {
+      Array.from(scoped.attributes).forEach(function (attr) {
+        if (attr.name.indexOf('data-rastin-font-weight-') === 0) {
+          scoped.removeAttribute(attr.name);
+        }
+      });
+    }
+
+    if (!weight || weight === 'default') return;
+
+    if (scoped) {
+      scoped.setAttribute('data-rastin-font-weight-' + weight, '');
+    } else {
+      document.documentElement.classList.add('rastin-font-weight-' + weight);
+    }
+  }
+
   // ─── Remove Translation (no page reload) ────────────
   /**
    * Restore all text nodes to their original pre-translation text.
@@ -1192,6 +1248,8 @@
     removeTranslation();
     if (isRTLActive()) removeRTL();
     if (isPersianFontActive()) removePersianFont();
+    applyFontSize('default');
+    applyFontWeight('default');
     saveState(false);
     log.notify('صفحه به حالت اولیه بازگشت', 'success');
   }
@@ -1324,8 +1382,9 @@
     }, 300);
   }
 
-  // ─── Select-to-Translate ───────────────────────────
-  var _selTooltip = null;
+  // ─── Selection Translation Panel ─────────────────────────
+  var _selPanel = null;
+  var _selectionEnabled = false;
 
   function escapeHtml(str) {
     var d = document.createElement('div');
@@ -1333,51 +1392,43 @@
     return d.innerHTML;
   }
 
-  function createSelectionTooltip(rect) {
-    removeSelectionTooltip();
+  function createSelectionPanel() {
+    removeSelectionPanel();
 
-    var tooltip = document.createElement('div');
-    tooltip.className = 'rastin-sel-tooltip';
-    tooltip.dir = 'rtl';
-    tooltip.innerHTML =
-      '<div class="rastin-sel-tooltip-body">' +
+    var panel = document.createElement('div');
+    panel.className = 'rastin-sel-panel';
+    panel.innerHTML =
+      '<div class="rastin-sel-panel-header">' +
+      '<span>ترجمه</span>' +
+      '<button class="rastin-sel-close-btn">' +
+      ICON_SVG.close +
+      '</button>' +
+      '</div>' +
+      '<div class="rastin-sel-panel-body">' +
       '<button class="rastin-sel-translate-btn">' +
       ICON_SVG.globe +
-      ' ترجمه' +
+      ' Translate' +
       '</button>' +
       '</div>';
 
-    var top = rect.bottom + window.scrollY + 6;
-    var left = rect.left + window.scrollX;
-    tooltip.style.top = top + 'px';
-    tooltip.style.left = left + 'px';
+    document.body.appendChild(panel);
+    _selPanel = panel;
 
-    // Edge-of-screen: right side
-    if (left + 120 > window.innerWidth - 10) {
-      tooltip.style.left = 'auto';
-      tooltip.style.right = '10px';
-    }
-
-    // Edge-of-screen: bottom (place above selection)
-    if (rect.bottom + 50 > window.innerHeight) {
-      tooltip.style.top = rect.top + window.scrollY - 10 + 'px';
-      tooltip.style.transform = 'translateY(-100%)';
-    }
-
-    document.body.appendChild(tooltip);
-    _selTooltip = tooltip;
-
-    tooltip.querySelector('.rastin-sel-translate-btn').addEventListener('click', function () {
+    panel.querySelector('.rastin-sel-translate-btn').addEventListener('click', function () {
       handleSelectionTranslate();
     });
 
-    return tooltip;
+    panel.querySelector('.rastin-sel-close-btn').addEventListener('click', function () {
+      removeSelectionPanel();
+    });
+
+    return panel;
   }
 
-  function removeSelectionTooltip() {
-    if (_selTooltip) {
-      _selTooltip.remove();
-      _selTooltip = null;
+  function removeSelectionPanel() {
+    if (_selPanel) {
+      _selPanel.remove();
+      _selPanel = null;
     }
   }
 
@@ -1405,59 +1456,51 @@
   }
 
   function onSelectionMouseUp(e) {
-    if (_selTooltip && _selTooltip.contains(e.target)) return;
+    if (!_selectionEnabled) return;
+    if (_selPanel && _selPanel.contains(e.target)) return;
 
     setTimeout(function () {
       var selData = getTranslatableSelection();
       if (!selData) {
-        removeSelectionTooltip();
         return;
       }
 
-      var rect = selData.range.getBoundingClientRect();
-      if (!rect || rect.width === 0) {
-        removeSelectionTooltip();
-        return;
-      }
-
-      createSelectionTooltip(rect);
+      createSelectionPanel();
     }, 10);
   }
 
   /**
-   * Async: translate selected text and show result in tooltip.
-   * Exposed globally so background.js can trigger it via message.
-   * @returns {Promise<string|null>}  translated text or null
+   * Async: translate selected text and show result in panel.
    */
   async function handleSelectionTranslate() {
     var sel = window.getSelection();
     if (!sel || sel.isCollapsed) {
-      removeSelectionTooltip();
+      removeSelectionPanel();
       return null;
     }
 
     var text = sel.toString().trim();
     if (!text) {
-      removeSelectionTooltip();
+      removeSelectionPanel();
       return null;
     }
 
     // Show loading
-    if (_selTooltip) {
-      var body = _selTooltip.querySelector('.rastin-sel-tooltip-body');
+    if (_selPanel) {
+      var body = _selPanel.querySelector('.rastin-sel-panel-body');
       if (body) {
         body.innerHTML =
-          '<span class="rastin-sel-loading">' + ICON_SVG.loader + '  در حال ترجمه...</span>';
+          '<div class="rastin-sel-loading">' + ICON_SVG.loader + '  در حال ترجمه...</div>';
       }
     }
 
     try {
       var translated = await translateText(text);
 
-      if (!_selTooltip) return null; // dismissed mid-translate
+      if (!_selPanel) return null; // dismissed mid-translate
 
-      // Show result in tooltip
-      var resultBody = _selTooltip.querySelector('.rastin-sel-tooltip-body');
+      // Show result in panel
+      var resultBody = _selPanel.querySelector('.rastin-sel-panel-body');
       if (resultBody) {
         resultBody.innerHTML =
           '<div class="rastin-sel-result">' +
@@ -1467,28 +1510,17 @@
           '<div class="rastin-sel-original-text">' +
           escapeHtml(text) +
           '</div>' +
-          '</div>' +
-          '<button class="rastin-sel-close-btn">' +
-          ICON_SVG.close +
-          '</button>';
-      }
-
-      var closeBtn = _selTooltip.querySelector('.rastin-sel-close-btn');
-      if (closeBtn) {
-        closeBtn.addEventListener('click', function (e) {
-          e.stopPropagation();
-          removeSelectionTooltip();
-        });
+          '</div>';
       }
 
       sessionPersistCache();
       return translated;
     } catch (err) {
       log.warn(ERR.TRANS_API_FAILURE, 'Selection translation failed', { error: err.message });
-      if (_selTooltip) {
-        var errBody = _selTooltip.querySelector('.rastin-sel-tooltip-body');
+      if (_selPanel) {
+        var errBody = _selPanel.querySelector('.rastin-sel-panel-body');
         if (errBody) {
-          errBody.innerHTML = '<span class="rastin-sel-error">ترجمه ناموفق. مجدد تلاش کنید.</span>';
+          errBody.innerHTML = '<div class="rastin-sel-error">ترجمه ناموفق. مجدد تلاش کنید.</div>';
         }
       }
       return null;
@@ -1497,13 +1529,13 @@
 
   // ─── Global event listeners for select-to-translate ────
   document.addEventListener('mouseup', onSelectionMouseUp);
-  window.addEventListener('scroll', removeSelectionTooltip, true);
+  window.addEventListener('scroll', removeSelectionPanel, true);
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') removeSelectionTooltip();
+    if (e.key === 'Escape') removeSelectionPanel();
   });
   document.addEventListener('mousedown', function (e) {
-    if (_selTooltip && !_selTooltip.contains(e.target)) {
-      removeSelectionTooltip();
+    if (_selPanel && !_selPanel.contains(e.target)) {
+      removeSelectionPanel();
     }
   });
 
@@ -1516,6 +1548,8 @@
         active: activated,
         translated: STATE.translated,
         persianFont: isPersianFontActive(),
+        fontSize: STATE.fontSize,
+        fontWeight: STATE.fontWeight,
         timestamp: Date.now(),
       };
       localStorage.setItem('rtl_translator_state', JSON.stringify(data));
@@ -1525,6 +1559,8 @@
           rtl_state: data,
           last_domain: domain,
           last_active: activated,
+          font_size: STATE.fontSize,
+          font_weight: STATE.fontWeight,
         });
       }
     } catch (e) {
@@ -1585,6 +1621,18 @@
           sendResponse({ success: true, persianFont: false });
           break;
 
+        case 'apply_font_size':
+          applyFontSize(message.size);
+          saveState(isRTLActive());
+          sendResponse({ success: true, fontSize: STATE.fontSize });
+          break;
+
+        case 'apply_font_weight':
+          applyFontWeight(message.weight);
+          saveState(isRTLActive());
+          sendResponse({ success: true, fontWeight: STATE.fontWeight });
+          break;
+
         case 'toggle_rtl':
           if (isRTLActive()) {
             removeRTL();
@@ -1602,10 +1650,13 @@
             translating: STATE.translating,
             rtl: isRTLActive(),
             persianFont: isPersianFontActive(),
+            fontSize: STATE.fontSize,
+            fontWeight: STATE.fontWeight,
             langDetected: STATE.langDetected,
             langCode: STATE.langCode,
             bannerShown: STATE.bannerShown,
             hasOriginals: !!(_originalTexts && _originalTexts.size > 0),
+            selectionEnabled: _selectionEnabled,
           });
           break;
 
@@ -1621,6 +1672,11 @@
         case 'hide_banner':
           hideBanner();
           sendResponse({ success: true });
+          break;
+
+        case 'set_selection_translate':
+          _selectionEnabled = message.enabled;
+          sendResponse({ success: true, enabled: _selectionEnabled });
           break;
 
         case 'translate_selection':
@@ -1683,6 +1739,12 @@
       if (saved.persianFont) {
         applyPersianFont();
         log.info(null, 'Restored previous Persian font state for domain');
+      }
+      if (saved.fontSize) {
+        applyFontSize(saved.fontSize);
+      }
+      if (saved.fontWeight) {
+        applyFontWeight(saved.fontWeight);
       }
     }
 

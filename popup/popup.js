@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', function () {
   var translateBtn = document.getElementById('translateBtn');
   var autoBannerToggle = document.getElementById('autoBannerToggle');
   var persianFontToggle = document.getElementById('persianFontToggle');
+  var selectionTranslateToggle = document.getElementById('selectionTranslateToggle');
   var fontSizeSelect = document.getElementById('fontSizeSelect');
   var fontWeightSelect = document.getElementById('fontWeightSelect');
   var resetBtn = document.getElementById('resetBtn');
@@ -155,12 +156,14 @@ document.addEventListener('DOMContentLoaded', function () {
         detectedLangEl.textContent = status.langDetected || '—';
         rtlToggle.checked = !!status.rtl;
         persianFontToggle.checked = !!status.persianFont;
+        selectionTranslateToggle.checked = !!status.selectionEnabled;
         fontSizeSelect.value = status.fontSize || 'default';
         fontWeightSelect.value = status.fontWeight || 'default';
         translateBtn.disabled = !!status.translating;
 
         // Disable font toggles while translating
         persianFontToggle.disabled = !!status.translating;
+        selectionTranslateToggle.disabled = !!status.translating;
         fontSizeSelect.disabled = !!status.translating;
         fontWeightSelect.disabled = !!status.translating;
       })
@@ -175,11 +178,15 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // ─── Load Settings ─────────────────────────────────
   function loadSettings() {
-    chrome.storage.local.get(['auto_banner', 'font_size', 'font_weight'], function (result) {
-      autoBannerToggle.checked = result.auto_banner !== false;
-      fontSizeSelect.value = result.font_size || 'default';
-      fontWeightSelect.value = result.font_weight || 'default';
-    });
+    chrome.storage.local.get(
+      ['auto_banner', 'font_size', 'font_weight', 'selection_translate'],
+      function (result) {
+        autoBannerToggle.checked = result.auto_banner !== false;
+        selectionTranslateToggle.checked = !!result.selection_translate;
+        fontSizeSelect.value = result.font_size || 'default';
+        fontWeightSelect.value = result.font_weight || 'default';
+      },
+    );
   }
 
   // ─── Event Handlers ────────────────────────────────
@@ -269,6 +276,25 @@ document.addEventListener('DOMContentLoaded', function () {
       .catch(function () {
         persianFontToggle.checked = !persianFontToggle.checked;
         showError('اعمال فونت فارسی با خطا مواجه شد');
+      });
+  });
+
+  selectionTranslateToggle.addEventListener('change', function () {
+    hideError();
+    sendToContent('set_selection_translate', { enabled: selectionTranslateToggle.checked })
+      .then(function (result) {
+        if (result && result.success) {
+          log.info(
+            null,
+            'Selection translate ' + (selectionTranslateToggle.checked ? 'enabled' : 'disabled'),
+          );
+          chrome.storage.local.set({ selection_translate: selectionTranslateToggle.checked });
+        }
+        refreshStatus();
+      })
+      .catch(function () {
+        selectionTranslateToggle.checked = !selectionTranslateToggle.checked;
+        showError('تنظیمات ترجمه انتخابی اعمال نشد');
       });
   });
 

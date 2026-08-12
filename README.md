@@ -122,7 +122,7 @@ Rastin/
 npx prettier --write <file>
 ```
 
-The project uses **Prettier** with `semi`, `singleQuote`, `trailingComma: all`.  
+The project uses **Prettier** with `semi`, `singleQuote`, `trailingComma: all`.
 A pre-commit hook auto-formats staged files:
 
 ```bash
