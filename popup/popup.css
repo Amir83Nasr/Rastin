@@ -155,7 +155,7 @@ body {
 
 /* ─── Controls Section ─────────────────────────────── */
 .controls {
-  padding: 12px 20px;
+  padding: 12px 14px;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -311,7 +311,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 6px 8px;
   background: var(--bg-surface);
   border-radius: 8px;
   margin-bottom: 8px;
@@ -336,14 +336,14 @@ body {
   border: 1px solid var(--border);
   color: var(--text-primary);
   border-radius: 6px;
-  padding: 6px 32px 6px 12px;
+  padding: 4px 24px 4px 8px;
   font-family: 'IRANYekanX', 'Tahoma', sans-serif;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   outline: none;
   transition: all 0.2s ease;
-  min-width: 110px;
+  min-width: 90px;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235a5a52' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: left 8px center;

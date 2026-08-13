@@ -1527,6 +1527,11 @@
     }
   }
 
+  // Load settings on init
+  chrome.storage.local.get(['selection_translate'], function (result) {
+    _selectionEnabled = !!result.selection_translate;
+  });
+
   // ─── Global event listeners for select-to-translate ────
   document.addEventListener('mouseup', onSelectionMouseUp);
   window.addEventListener('scroll', removeSelectionPanel, true);
