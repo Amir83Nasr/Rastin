@@ -20,10 +20,14 @@ document.addEventListener('DOMContentLoaded', function () {
   var autoBannerToggle = document.getElementById('autoBannerToggle');
   var persianFontToggle = document.getElementById('persianFontToggle');
   var selectionTranslateToggle = document.getElementById('selectionTranslateToggle');
-  var fontSizeSelect = document.getElementById('fontSizeSelect');
-  var fontWeightSelect = document.getElementById('fontWeightSelect');
   var resetBtn = document.getElementById('resetBtn');
   var errorBar = document.getElementById('errorBar');
+
+  // Local UI guards: a translate click owns the button until its promise
+  // settles, and a selection-toggle click owns the checkbox for 2s so an
+  // in-flight refreshStatus can't overwrite the user's choice.
+  var translateBusy = false;
+  var selectionPendingUntil = 0;
 
   // ─── Status icon helper ─────────────────────────────
   function setStatus(iconName, text, color) {
@@ -156,16 +160,14 @@ document.addEventListener('DOMContentLoaded', function () {
         detectedLangEl.textContent = status.langDetected || '—';
         rtlToggle.checked = !!status.rtl;
         persianFontToggle.checked = !!status.persianFont;
-        selectionTranslateToggle.checked = !!status.selectionEnabled;
-        fontSizeSelect.value = status.fontSize || 'default';
-        fontWeightSelect.value = status.fontWeight || 'default';
-        translateBtn.disabled = !!status.translating;
+        if (Date.now() > selectionPendingUntil) {
+          selectionTranslateToggle.checked = !!status.selectionEnabled;
+        }
+        if (!translateBusy) translateBtn.disabled = !!status.translating;
 
         // Disable font toggles while translating
         persianFontToggle.disabled = !!status.translating;
         selectionTranslateToggle.disabled = !!status.translating;
-        fontSizeSelect.disabled = !!status.translating;
-        fontWeightSelect.disabled = !!status.translating;
       })
       .catch(function (err) {
         setStatus('check', 'خطا در ارتباط', '#ef4444');
@@ -178,15 +180,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // ─── Load Settings ─────────────────────────────────
   function loadSettings() {
-    chrome.storage.local.get(
-      ['auto_banner', 'font_size', 'font_weight', 'selection_translate'],
-      function (result) {
-        autoBannerToggle.checked = result.auto_banner !== false;
-        selectionTranslateToggle.checked = !!result.selection_translate;
-        fontSizeSelect.value = result.font_size || 'default';
-        fontWeightSelect.value = result.font_weight || 'default';
-      },
-    );
+    chrome.storage.local.get(['auto_banner', 'selection_translate'], function (result) {
+      autoBannerToggle.checked = result.auto_banner !== false;
+      selectionTranslateToggle.checked = !!result.selection_translate;
+    });
   }
 
   // ─── Event Handlers ────────────────────────────────
@@ -207,27 +204,26 @@ document.addEventListener('DOMContentLoaded', function () {
       });
   });
 
+  function setTranslateBtnBusy(busy) {
+    translateBusy = busy;
+    translateBtn.innerHTML = '';
+    var icon = createIcon(busy ? 'loader-circle' : 'globe', 18);
+    if (busy) icon.classList.add('btn-spin');
+    translateBtn.appendChild(icon);
+    translateBtn.appendChild(
+      document.createTextNode(busy ? ' در حال ترجمه...' : ' ترجمه صفحه به فارسی'),
+    );
+    translateBtn.disabled = busy;
+  }
+
   translateBtn.addEventListener('click', function () {
-    translateBtn.disabled = true;
+    setTranslateBtnBusy(true);
     hideError();
 
-    // Replace button content — keep icon element reference
-    translateBtn.innerHTML = '';
-    var spinIcon = createIcon('loader-circle', 18);
-    spinIcon.classList.add('btn-spin');
-    translateBtn.appendChild(spinIcon);
-    translateBtn.appendChild(document.createTextNode(' در حال ترجمه...'));
-
-    sendToContent('apply_rtl')
-      .then(function () {
-        return sendToContent('translate');
-      })
+    // Single message — content script applies RTL itself before translating.
+    sendToContent('translate')
       .then(function (result) {
-        // Restore button
-        translateBtn.innerHTML = '';
-        var globeIcon = createIcon('globe', 18);
-        translateBtn.appendChild(globeIcon);
-        translateBtn.appendChild(document.createTextNode(' ترجمه صفحه به فارسی'));
+        setTranslateBtnBusy(false);
         refreshStatus();
 
         if (result && result.success) {
@@ -241,12 +237,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
       })
       .catch(function (err) {
-        // Restore button
-        translateBtn.innerHTML = '';
-        var globeIcon = createIcon('globe', 18);
-        translateBtn.appendChild(globeIcon);
-        translateBtn.appendChild(document.createTextNode(' ترجمه صفحه به فارسی'));
-        translateBtn.disabled = false;
+        setTranslateBtnBusy(false);
 
         showError('ترجمه با خطا مواجه شد. اتصال اینترنت خود را بررسی کنید.');
         log.error(ERR.TRANS_API_FAILURE || 'TRANS_API_FAILURE', 'Popup translate failed', {
@@ -281,6 +272,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   selectionTranslateToggle.addEventListener('change', function () {
     hideError();
+    selectionPendingUntil = Date.now() + 2000;
     sendToContent('set_selection_translate', { enabled: selectionTranslateToggle.checked })
       .then(function (result) {
         if (result && result.success) {
@@ -295,40 +287,6 @@ document.addEventListener('DOMContentLoaded', function () {
       .catch(function () {
         selectionTranslateToggle.checked = !selectionTranslateToggle.checked;
         showError('تنظیمات ترجمه انتخابی اعمال نشد');
-      });
-  });
-
-  fontSizeSelect.addEventListener('change', function () {
-    hideError();
-    var size = fontSizeSelect.value;
-    sendToContent('apply_font_size', { size: size })
-      .then(function (result) {
-        if (result && result.success) {
-          log.info(null, 'Font size set to ' + size);
-          chrome.storage.local.set({ font_size: size });
-        }
-        refreshStatus();
-      })
-      .catch(function () {
-        showError('تنظیم سایز فونت با خطا مواجه شد');
-        refreshStatus();
-      });
-  });
-
-  fontWeightSelect.addEventListener('change', function () {
-    hideError();
-    var weight = fontWeightSelect.value;
-    sendToContent('apply_font_weight', { weight: weight })
-      .then(function (result) {
-        if (result && result.success) {
-          log.info(null, 'Font weight set to ' + weight);
-          chrome.storage.local.set({ font_weight: weight });
-        }
-        refreshStatus();
-      })
-      .catch(function () {
-        showError('تنظیم وزن فونت با خطا مواجه شد');
-        refreshStatus();
       });
   });
 

@@ -30,49 +30,58 @@
   var MAX_CACHE_ENTRIES = 1000;
 
   /** Load cache from chrome.storage.session, falling back to localStorage. */
+  function loadLocalCache() {
+    try {
+      var local = localStorage.getItem(LOCAL_CACHE_KEY);
+      if (local) {
+        var parsed = JSON.parse(local);
+        if (parsed && typeof parsed === 'object') {
+          transCache = parsed;
+          log.info(
+            null,
+            'Loaded ' + Object.keys(transCache).length + ' cached translations (localStorage)',
+          );
+        }
+      }
+    } catch (_) {
+      /* best-effort */
+    }
+  }
+
+  /** Load cache from chrome.storage.session, falling back to localStorage. */
   function sessionLoadCache() {
     return new Promise(function (resolve) {
       if (!isExtensionValid()) {
+        loadLocalCache();
         resolve();
         return;
       }
-      chrome.storage.session.get([SESSION_CACHE_KEY], function (result) {
-        try {
-          var stored = result[SESSION_CACHE_KEY];
-          if (stored) {
-            transCache = stored;
-            log.info(
-              null,
-              'Loaded ' + Object.keys(transCache).length + ' cached translations (session)',
-            );
-          }
-        } catch (_) {
-          /* best-effort */
-        }
-
-        // Fall back to localStorage if session storage was empty
-        if (Object.keys(transCache).length === 0) {
-          try {
-            var local = localStorage.getItem(LOCAL_CACHE_KEY);
-            if (local) {
-              var parsed = JSON.parse(local);
-              if (parsed && typeof parsed === 'object') {
-                transCache = parsed;
+      try {
+        chrome.storage.session.get([SESSION_CACHE_KEY], function (result) {
+          if (chrome.runtime.lastError) {
+            /* session unavailable — fall through to localStorage */
+          } else {
+            try {
+              var stored = result && result[SESSION_CACHE_KEY];
+              if (stored) {
+                transCache = stored;
                 log.info(
                   null,
-                  'Loaded ' +
-                    Object.keys(transCache).length +
-                    ' cached translations (localStorage)',
+                  'Loaded ' + Object.keys(transCache).length + ' cached translations (session)',
                 );
               }
+            } catch (_) {
+              /* best-effort */
             }
-          } catch (_) {
-            /* best-effort */
           }
-        }
 
+          if (Object.keys(transCache).length === 0) loadLocalCache();
+          resolve();
+        });
+      } catch (_) {
+        loadLocalCache();
         resolve();
-      });
+      }
     });
   }
 
@@ -107,14 +116,19 @@
 
   function flushCacheToStorage() {
     _cachePersistTimer = null;
-    if (!isExtensionValid()) return;
 
     // 1. Persist to chrome.storage.session (shared across tabs)
-    var data = {};
-    data[SESSION_CACHE_KEY] = transCache;
-    chrome.storage.session.set(data, function () {
-      /* best-effort */
-    });
+    if (isExtensionValid()) {
+      try {
+        var data = {};
+        data[SESSION_CACHE_KEY] = transCache;
+        chrome.storage.session.set(data, function () {
+          /* best-effort */
+        });
+      } catch (_) {
+        /* context invalidated — localStorage below still runs */
+      }
+    }
 
     // 2. Persist to localStorage (cross-session — survives browser restart)
     try {
@@ -132,8 +146,6 @@
     bannerShown: false,
     langDetected: null,
     langCode: null,
-    fontSize: 'default',
-    fontWeight: 'default',
   };
 
   // ─── Original Text Store ──────────────────────────────
@@ -241,23 +253,9 @@
         '@font-face {' +
         "font-family:'IRANYekanX';" +
         "src:url('" +
-        chrome.runtime.getURL('fonts/IRANYekanX/IRANYekanX-Regular.ttf') +
-        "') format('truetype');" +
+        chrome.runtime.getURL('fonts/IRANYekanX/IRANYekanX-Regular.woff2') +
+        "') format('woff2');" +
         'font-weight:400;font-style:normal;font-display:swap;' +
-        'unicode-range:U+0600-06FF,U+0750-077F,U+08A0-08FF,U+FB50-FDFF,U+FE70-FEFF;}' +
-        '@font-face {' +
-        "font-family:'IRANYekanX';" +
-        "src:url('" +
-        chrome.runtime.getURL('fonts/IRANYekanX/IRANYekanX-Medium.ttf') +
-        "') format('truetype');" +
-        'font-weight:500;font-style:normal;font-display:swap;' +
-        'unicode-range:U+0600-06FF,U+0750-077F,U+08A0-08FF,U+FB50-FDFF,U+FE70-FEFF;}' +
-        '@font-face {' +
-        "font-family:'IRANYekanX';" +
-        "src:url('" +
-        chrome.runtime.getURL('fonts/IRANYekanX/IRANYekanX-DemiBold.ttf') +
-        "') format('truetype');" +
-        'font-weight:600;font-style:normal;font-display:swap;' +
         'unicode-range:U+0600-06FF,U+0750-077F,U+08A0-08FF,U+FB50-FDFF,U+FE70-FEFF;}' +
         '@font-face {' +
         "font-family:'Cartograph CF';" +
@@ -451,8 +449,11 @@
     var samples = 0;
     var MAX_SAMPLES = 200;
     var BUFFER = 500;
+    // Stride across the full list so the sample covers the whole
+    // page — a plain prefix slice only measures the page top.
+    var stride = Math.max(1, Math.floor(textNodes.length / MAX_SAMPLES));
 
-    for (var i = 0; i < textNodes.length && samples < MAX_SAMPLES; i++) {
+    for (var i = 0; i < textNodes.length && samples < MAX_SAMPLES; i += stride) {
       var n = textNodes[i];
       var parent = n.parentElement;
       if (!parent || seenParents.has(parent)) continue;
@@ -852,6 +853,7 @@
 
       // ── Streaming pipeline: single shared queue + rAF DOM flush ──
       var translatedCount = 0;
+      var inFlight = 0;
       var concurrency = getAdaptiveConcurrency();
       var DOM_BUDGET_MS = 8;
       var domBatchSize = 100;
@@ -902,7 +904,12 @@
           }
 
           if (domQueue.length > 0) scheduleDOMFlush();
-          if (domFlushResolve && domQueue.length === 0 && workQueue.length === 0) {
+          if (
+            domFlushResolve &&
+            domQueue.length === 0 &&
+            workQueue.length === 0 &&
+            inFlight === 0
+          ) {
             domFlushResolve();
             domFlushResolve = null;
           }
@@ -914,8 +921,10 @@
           // Pull a batch of texts (up to BATCH_SIZE) for a single API call
           var chunk = workQueue.splice(0, BATCH_SIZE);
           if (chunk.length === 0) break;
+          inFlight++;
 
           var translatedBatch = await translateBatch(chunk);
+          inFlight--;
 
           for (var bi = 0; bi < chunk.length; bi++) {
             var item = chunk[bi];
@@ -950,10 +959,14 @@
       for (var w = 0; w < poolSize; w++) workers.push(streamWorker());
       await Promise.all(workers);
 
-      // Wait for final DOM flush
-      if (domQueue.length > 0) {
+      // Wait for final DOM flush — the completion predicate also covers
+      // worker-staged items, but a forced flush here keeps this robust
+      // even if a future worker path stops scheduling rAF.
+      if (domQueue.length > 0 || domFlushResolve) {
+        if (domQueue.length > 0) scheduleDOMFlush();
         await new Promise(function (resolve) {
-          domFlushResolve = resolve;
+          if (domQueue.length === 0) resolve();
+          else domFlushResolve = resolve;
         });
       }
 
@@ -1164,57 +1177,6 @@
     );
   }
 
-  // ─── Font Size & Weight Application ──────────────────
-  function applyFontSize(size) {
-    STATE.fontSize = size || 'default';
-    var scoped = document.querySelector('[data-rastin-rtl]');
-
-    // Remove existing font-size classes/attributes
-    document.documentElement.className = document.documentElement.className
-      .replace(/\brastin-font-size-\S+\b/g, '')
-      .trim();
-    if (scoped) {
-      Array.from(scoped.attributes).forEach(function (attr) {
-        if (attr.name.indexOf('data-rastin-font-size-') === 0) {
-          scoped.removeAttribute(attr.name);
-        }
-      });
-    }
-
-    if (!size || size === 'default') return;
-
-    if (scoped) {
-      scoped.setAttribute('data-rastin-font-size-' + size, '');
-    } else {
-      document.documentElement.classList.add('rastin-font-size-' + size);
-    }
-  }
-
-  function applyFontWeight(weight) {
-    STATE.fontWeight = weight || 'default';
-    var scoped = document.querySelector('[data-rastin-rtl]');
-
-    // Remove existing font-weight classes/attributes
-    document.documentElement.className = document.documentElement.className
-      .replace(/\brastin-font-weight-\S+\b/g, '')
-      .trim();
-    if (scoped) {
-      Array.from(scoped.attributes).forEach(function (attr) {
-        if (attr.name.indexOf('data-rastin-font-weight-') === 0) {
-          scoped.removeAttribute(attr.name);
-        }
-      });
-    }
-
-    if (!weight || weight === 'default') return;
-
-    if (scoped) {
-      scoped.setAttribute('data-rastin-font-weight-' + weight, '');
-    } else {
-      document.documentElement.classList.add('rastin-font-weight-' + weight);
-    }
-  }
-
   // ─── Remove Translation (no page reload) ────────────
   /**
    * Restore all text nodes to their original pre-translation text.
@@ -1248,8 +1210,6 @@
     removeTranslation();
     if (isRTLActive()) removeRTL();
     if (isPersianFontActive()) removePersianFont();
-    applyFontSize('default');
-    applyFontWeight('default');
     saveState(false);
     log.notify('صفحه به حالت اولیه بازگشت', 'success');
   }
@@ -1278,54 +1238,51 @@
     void banner.offsetHeight; // force reflow
     banner.classList.add('visible');
 
+    var bannerText = banner.querySelector('.rtl-translator-banner-text');
+
+    function setBannerButtonsDisabled(disabled, except) {
+      var buttons = banner.querySelectorAll('button');
+      for (var bi = 0; bi < buttons.length; bi++) {
+        if (buttons[bi] !== except) buttons[bi].disabled = disabled;
+      }
+    }
+
+    function showBannerError() {
+      bannerText.innerHTML =
+        ICON_SVG.warning +
+        ' ترجمه با خطا مواجه شد. ' +
+        '<button class="rtl-translator-retry-btn">تلاش مجدد</button>';
+      var retryBtn = banner.querySelector('.rtl-translator-retry-btn');
+      setBannerButtonsDisabled(false, retryBtn);
+      if (retryBtn) {
+        retryBtn.addEventListener('click', async function (e) {
+          e.stopPropagation();
+          await runBannerTranslation();
+        });
+      }
+    }
+
+    async function runBannerTranslation() {
+      setBannerButtonsDisabled(true);
+      bannerText.innerHTML = ICON_SVG.loader + ' در حال ترجمه...';
+
+      applyRTL();
+      var ok = await translatePage();
+
+      if (ok) {
+        hideBanner(banner);
+        saveState(true);
+        ensurePersistedFont();
+        log.notify('صفحه با موفقیت به فارسی ترجمه شد', 'success');
+      } else {
+        showBannerError();
+        log.notify('ترجمه ناموفق — اتصال اینترنت خود را بررسی کنید', 'error');
+      }
+    }
+
     banner
       .querySelector('.rtl-translator-translate-btn')
-      .addEventListener('click', async function () {
-        applyRTL();
-
-        // Close banner immediately so the user sees the page right away.
-        // Translation runs in the background.
-        hideBanner(banner);
-
-        var ok = await translatePage();
-
-        if (ok) {
-          saveState(true);
-          ensurePersistedFont();
-          log.notify('صفحه با موفقیت به فارسی ترجمه شد', 'success');
-        } else {
-          // Translation failed — show error state in banner
-          banner.querySelector('.rtl-translator-banner-text').innerHTML =
-            ICON_SVG.warning +
-            ' ترجمه با خطا مواجه شد. ' +
-            '<button class="rtl-translator-retry-btn" style="background:rgba(243,244,237,0.15);border:1px solid rgba(243,244,237,0.3);color:#f3f4ed;padding:4px 14px;border-radius:5px;cursor:pointer;font-family:inherit;font-size:12px;margin-right:8px;">تلاش مجدد</button>';
-          for (var j = 0; j < btns.length; j++) btns[j].disabled = false;
-
-          // Wire up retry button
-          var retryBtn = banner.querySelector('.rtl-translator-retry-btn');
-          if (retryBtn) {
-            retryBtn.addEventListener('click', async function (e) {
-              e.stopPropagation();
-              retryBtn.disabled = true;
-              banner.querySelector('.rtl-translator-banner-text').innerHTML =
-                ICON_SVG.loader + ' در حال ترجمه...';
-              for (var k = 0; k < btns.length; k++) btns[k].disabled = true;
-              var retryOk = await translatePage();
-              if (retryOk) {
-                hideBanner(banner);
-                saveState(true);
-                log.notify('صفحه با موفقیت به فارسی ترجمه شد', 'success');
-              } else {
-                // Still failed — restore error state
-                banner.querySelector('.rtl-translator-banner-text').innerHTML =
-                  ICON_SVG.warning + ' ترجمه ناموفق. بعداً تلاش کنید.';
-                for (var l = 0; l < btns.length; l++) btns[l].disabled = false;
-                log.notify('ترجمه ناموفق — اتصال اینترنت خود را بررسی کنید', 'error');
-              }
-            });
-          }
-        }
-      });
+      .addEventListener('click', runBannerTranslation);
 
     banner.querySelector('.rtl-translator-rtl-btn').addEventListener('click', function () {
       applyRTL();
@@ -1528,13 +1485,26 @@
   }
 
   // Load settings on init
-  chrome.storage.local.get(['selection_translate'], function (result) {
-    _selectionEnabled = !!result.selection_translate;
-  });
+  try {
+    if (isExtensionValid()) {
+      chrome.storage.local.get(['selection_translate'], function (result) {
+        if (chrome.runtime.lastError) return;
+        _selectionEnabled = !!(result && result.selection_translate);
+      });
+    }
+  } catch (_) {
+    /* best-effort */
+  }
 
   // ─── Global event listeners for select-to-translate ────
   document.addEventListener('mouseup', onSelectionMouseUp);
-  window.addEventListener('scroll', removeSelectionPanel, true);
+  window.addEventListener(
+    'scroll',
+    function () {
+      removeSelectionPanel();
+    },
+    { capture: true, passive: true },
+  );
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') removeSelectionPanel();
   });
@@ -1553,8 +1523,6 @@
         active: activated,
         translated: STATE.translated,
         persianFont: isPersianFontActive(),
-        fontSize: STATE.fontSize,
-        fontWeight: STATE.fontWeight,
         timestamp: Date.now(),
       };
       localStorage.setItem('rtl_translator_state', JSON.stringify(data));
@@ -1564,8 +1532,6 @@
           rtl_state: data,
           last_domain: domain,
           last_active: activated,
-          font_size: STATE.fontSize,
-          font_weight: STATE.fontWeight,
         });
       }
     } catch (e) {
@@ -1626,18 +1592,6 @@
           sendResponse({ success: true, persianFont: false });
           break;
 
-        case 'apply_font_size':
-          applyFontSize(message.size);
-          saveState(isRTLActive());
-          sendResponse({ success: true, fontSize: STATE.fontSize });
-          break;
-
-        case 'apply_font_weight':
-          applyFontWeight(message.weight);
-          saveState(isRTLActive());
-          sendResponse({ success: true, fontWeight: STATE.fontWeight });
-          break;
-
         case 'toggle_rtl':
           if (isRTLActive()) {
             removeRTL();
@@ -1655,8 +1609,6 @@
             translating: STATE.translating,
             rtl: isRTLActive(),
             persianFont: isPersianFontActive(),
-            fontSize: STATE.fontSize,
-            fontWeight: STATE.fontWeight,
             langDetected: STATE.langDetected,
             langCode: STATE.langCode,
             bannerShown: STATE.bannerShown,
@@ -1745,21 +1697,22 @@
         applyPersianFont();
         log.info(null, 'Restored previous Persian font state for domain');
       }
-      if (saved.fontSize) {
-        applyFontSize(saved.fontSize);
-      }
-      if (saved.fontWeight) {
-        applyFontWeight(saved.fontWeight);
-      }
     }
 
     // Check auto-banner preference
-    chrome.storage.local.get(['auto_banner'], function (result) {
-      if (result.auto_banner === false) return;
-      setTimeout(function () {
-        if (!STATE.bannerShown && !isRTLActive()) createBanner();
-      }, 1500);
-    });
+    try {
+      if (isExtensionValid()) {
+        chrome.storage.local.get(['auto_banner'], function (result) {
+          if (chrome.runtime.lastError) return;
+          if (result && result.auto_banner === false) return;
+          setTimeout(function () {
+            if (!STATE.bannerShown && !isRTLActive()) createBanner();
+          }, 1500);
+        });
+      }
+    } catch (_) {
+      /* best-effort — banner simply stays hidden */
+    }
   }
 
   if (document.readyState === 'loading') {

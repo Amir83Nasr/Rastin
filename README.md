@@ -3,7 +3,7 @@
   <h1>Rastin — Farsi Translator for Chrome</h1>
   <p><strong>راستین</strong> — <em>"honest" in Persian</em></p>
   <p>
-    <strong>Author:</strong> Amirhossein Nasrollahi —
+    <strong>Author:</strong> Amir Hossein Nasrollahi —
     <a href="https://ble.ir/Amir83Nasr">@Amir83Nasr</a>
   </p>
 </div>
@@ -101,13 +101,13 @@ Rastin/
 
 ## 🛠 Tech Stack
 
-| Technology           | Description                                              |
-| -------------------- | -------------------------------------------------------- |
-| Manifest V3          | Latest Chrome extension API                              |
+| Technology           | Description                                                |
+| -------------------- | ---------------------------------------------------------- |
+| Manifest V3          | Latest Chrome extension API                                |
 | Google Translate API | Free, no key needed (`client=gtx&sl=auto&tl=fa&dt=t&q=`) |
-| Iran Yekan X         | Persian typeface (Regular, Medium, DemiBold)             |
-| Prettier             | Code formatting                                          |
-| Inline SVG Icons     | Custom Lucide-style icons (12 paths)                     |
+| Iran Yekan X         | Persian typeface (Regular, Medium, DemiBold)               |
+| Prettier             | Code formatting                                            |
+| Inline SVG Icons     | Custom Lucide-style icons (12 paths)                       |
 
 ## 💻 Development
 
@@ -138,12 +138,12 @@ git config core.hooksPath .githooks
 
 ## 🔧 Common Issues
 
-| Issue                              | Fix                                                                                            |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------- |
-| SVG as extension icon              | Use the PNG fallback — Chrome doesn't reliably render SVG extension icons                      |
+| Issue                              | Fix                                                                                                 |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------- |
+| SVG as extension icon              | Use the PNG fallback — Chrome doesn't reliably render SVG extension icons                          |
 | Font not loading in content script | Font is injected via JS (`chrome.runtime.getURL()`) — CSS can't use `chrome-extension://` URLs |
-| `importScripts` not working        | Don't use`"type": "module"` in the background service worker — `importScripts` won't work      |
-| Extension icon not showing         | Make sure`manifest.json` icon paths point to PNG files, not SVG                                |
+| `importScripts` not working      | Don't use`"type": "module"` in the background service worker — `importScripts` won't work      |
+| Extension icon not showing         | Make sure`manifest.json` icon paths point to PNG files, not SVG                                   |
 
 ## 📝 License
 
