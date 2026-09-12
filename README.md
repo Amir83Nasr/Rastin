@@ -142,8 +142,8 @@ git config core.hooksPath .githooks
 | ---------------------------------- | ---------------------------------------------------------------------------------------------- |
 | SVG as extension icon              | Use the PNG fallback — Chrome doesn't reliably render SVG extension icons                      |
 | Font not loading in content script | Font is injected via JS (`chrome.runtime.getURL()`) — CSS can't use `chrome-extension://` URLs |
-| `importScripts` not working        | Don't use `"type": "module"` in the background service worker — `importScripts` won't work     |
-| Extension icon not showing         | Make sure `manifest.json` icon paths point to PNG files, not SVG                               |
+| `importScripts` not working        | Don't use`"type": "module"` in the background service worker — `importScripts` won't work      |
+| Extension icon not showing         | Make sure`manifest.json` icon paths point to PNG files, not SVG                                |
 
 ## 📝 License
 
